@@ -103,7 +103,7 @@ LISTA_3 = [
 # 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
 # ==============================================================================
 PARAMETROS = [
-    "Rocío Nahle", "Rocio Nahle", "Nahle", "Mañanera", "DIF Estatal", "DIF Veracruz",
+    "Inundación", "Rocio Nahle", "Nahle", "Mañanera", "DIF Estatal", "DIF Veracruz",
     "CGEC", "Contraloría General del Estado", "CGCS", "Coordinación General Comunicación Social",
     "SEGOB", "Secretaría de Gobierno", "SSP", "Secretaría de Seguridad Pública",
     "SEV", "Secretaría de Educación de Veracruz", "SS", "Secretaría de Salud",
