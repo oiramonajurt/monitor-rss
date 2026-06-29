@@ -67,6 +67,38 @@ LISTA_FIN_DE_SEMANA = [
     "https://cambiodigitalnoticias.com/feed/"
 ]
 
+# NUEVA LISTA 3 ADAPTADA A FORMATO ENRUTADOR RSS
+LISTA_3 = [
+    "https://www.masnoticias.mx/feed/",
+    "https://xeu.mx/feed/",
+    "https://horacero.mx/feed/",
+    "https://jornadaveracruz.com.mx/feed/",
+    "https://elementosmx.com/feed/",
+    "https://tvsureste.com/feed/",
+    "https://www.politicaaldia.com/feed/",
+    "https://vanguardiaveracruz.com/feed/",
+    "https://www.firmas.mx/feed/",
+    "https://cambiodigitalnoticias.com/feed/",
+    "https://www.diariodexalapa.com.mx/rss/",
+    "https://x.gd/EDfoM",  # Redirección directa del acortador del Piñero
+    "https://cronicadelpoder.com/feed/",
+    "https://siguenzacomunica.com/feed/",
+    "https://www.cronicaveracruz.com/feed/",
+    "https://noticiaslafuente.com.mx/feed/",
+    "https://alornoticias.com.mx/feed/",
+    "https://coatzahoy.com/feed/",
+    "https://olmecamultimedios.com.mx/feed/",
+    "https://graficoaldia.mx/feed/",
+    "https://diariolostuxtlas.com/feed/",
+    "https://diariodelistmo.com/feed/",
+    "https://www.elbuentono.com.mx/feed/",
+    "https://versiones.com.mx/feed/",
+    "https://formato7.com/feed/",
+    "https://lasillarota.com/veracruz/feed/",
+    "https://presencianoticias.com/feed/",
+    "https://laizquierdanoticias.com.mx/feed/"
+]
+
 # ==============================================================================
 # 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
 # ==============================================================================
@@ -134,6 +166,7 @@ def normalizar_texto(texto):
 def determinar_lista_medios():
     if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
     if MODO_LISTA == "LISTA_2": return LISTA_2, "Lista 2 (Manual)"
+    if MODO_LISTA == "LISTA_3": return LISTA_3, "Lista 3 (Manual)"
     return (LISTA_2, "Lista 2 (Fin de Semana)") if datetime.today().weekday() >= 5 else (LISTA_1, "Lista 1 (Entre Semana)")
 
 def cargar_historial():
@@ -256,7 +289,7 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
 def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada=None):
     if lista_forzada:
         medios_activos = lista_forzada
-        nombre_lista = "Lista Fin de Semana"
+        nombre_lista = "Lista Asignada"
     else:
         medios_activos, nombre_lista = determinar_lista_medios()
         
@@ -305,7 +338,7 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                 if not timestamp_noticia:
                     timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
 
-                hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETRES) if 'PARAMETRES' in locals() else evaluar_texto(titulo, PARAMETROS)
+                hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETROS)
                 if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
                 
                 if hizo_match:
@@ -375,6 +408,7 @@ def iniciar_interfaz_bot():
                         "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular (Sin IA).\n"
                         "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
                         "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
+                        "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3 (Nuevos Medios).\n"
                         "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
                         "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
                         "⚙️ *SISTEMA:*\n"
@@ -404,6 +438,18 @@ def iniciar_interfaz_bot():
                         enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
                         encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
                         enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
+                        
+                elif texto_comando.startswith("/escanearb"):
+                    arg = texto_comando.replace("/escanearb", "").strip()
+                    num = re.findall(r'\d+', arg)
+                    horas = int(num[0]) if num else None
+                    if horas:
+                        enviar_mensaje_telegram(f"🔍 _Rastreando Lista 3 (Últimas {horas} horas)..._")
+                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_3)
+                    else:
+                        enviar_mensaje_telegram("🔍 _Rastreando Lista 3 (Corte desde 10:00 PM)..._")
+                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_3)
+                    enviar_mensaje_telegram(f"✅ *Escaneo Lista 3 Terminado.*\n✨ Alertas enviadas: `{total}`")
                         
                 elif texto_comando.startswith("/escaneard"):
                     arg = texto_comando.replace("/escaneard", "").strip()
@@ -442,7 +488,7 @@ def iniciar_interfaz_bot():
                     enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
                     
                 elif texto_comando == "/modo":
-                    msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2`"
+                    msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3`"
                     enviar_mensaje_telegram(msg_modo)
                 elif texto_comando == "/set_auto":
                     MODO_LISTA = "AUTO"
@@ -453,6 +499,9 @@ def iniciar_interfaz_bot():
                 elif texto_comando == "/set_lista2":
                     MODO_LISTA = "LISTA_2"
                     enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 2`")
+                elif texto_comando == "/set_lista3":
+                    MODO_LISTA = "LISTA_3"
+                    enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 3`")
                 elif texto_comando == "/limpiar":
                     if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
                     enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
