@@ -6,9 +6,13 @@ import re
 import time
 import calendar
 import unicodedata
+import socket  # ESCUDO TRABAJADO PARA EVITAR CONGELAMIENTOS
 from datetime import datetime, timedelta
 from flask import Flask
 import threading
+
+# Configurar tiempo límite global de 15 segundos para cualquier conexión externa (Evita bucles infinitos en RSS)
+socket.setdefaulttimeout(15)
 
 # ==============================================================================
 # 1. CONFIGURACIÓN E IDENTIFICACIÓN (Variables de Entorno de Render)
@@ -67,7 +71,6 @@ LISTA_FIN_DE_SEMANA = [
     "https://cambiodigitalnoticias.com/feed/"
 ]
 
-# NUEVA LISTA 3 ADAPTADA A FORMATO ENRUTADOR RSS
 LISTA_3 = [
     "https://www.masnoticias.mx/feed/",
     "https://xeu.mx/feed/",
@@ -80,7 +83,7 @@ LISTA_3 = [
     "https://www.firmas.mx/feed/",
     "https://cambiodigitalnoticias.com/feed/",
     "https://www.diariodexalapa.com.mx/rss/",
-    "https://x.gd/EDfoM",  # Redirección directa del acortador del Piñero
+    "https://x.gd/EDfoM",  
     "https://cronicadelpoder.com/feed/",
     "https://siguenzacomunica.com/feed/",
     "https://www.cronicaveracruz.com/feed/",
@@ -103,7 +106,7 @@ LISTA_3 = [
 # 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
 # ==============================================================================
 PARAMETROS = [
-    "Inundación", "Rocio Nahle", "Nahle", "Mañanera", "DIF Estatal", "DIF Veracruz",
+    "Rocío Nahle", "Rocio Nahle", "Nahle", "Mañanera", "DIF Estatal", "DIF Veracruz",
     "CGEC", "Contraloría General del Estado", "CGCS", "Coordinación General Comunicación Social",
     "SEGOB", "Secretaría de Gobierno", "SSP", "Secretaría de Seguridad Pública",
     "SEV", "Secretaría de Educación de Veracruz", "SS", "Secretaría de Salud",
