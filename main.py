@@ -6,13 +6,9 @@ import re
 import time
 import calendar
 import unicodedata
-import socket  # ESCUDO TRABAJADO PARA EVITAR CONGELAMIENTOS
 from datetime import datetime, timedelta
 from flask import Flask
 import threading
-
-# Configurar tiempo límite global de 15 segundos para cualquier conexión externa (Evita bucles infinitos en RSS)
-socket.setdefaulttimeout(15)
 
 # ==============================================================================
 # 1. CONFIGURACIÓN E IDENTIFICACIÓN (Variables de Entorno de Render)
@@ -251,7 +247,11 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
     
     for url_rss in medios_activos:
         try:
-            feed = feedparser.parse(url_rss)
+            # DESCARGA INTEGRAL BLINDADA CON TIMEOUT TOTAL
+            resp = requests.get(url_rss, timeout=15)
+            if resp.status_code != 200: continue
+            
+            feed = feedparser.parse(resp.content)
             nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
             for entrada in feed.entries:
                 titulo = entrada.get("title", "")
@@ -313,7 +313,11 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
 
     for url_rss in medios_activos:
         try:
-            feed = feedparser.parse(url_rss)
+            # DESCARGA INTEGRAL BLINDADA CON TIMEOUT TOTAL
+            resp = requests.get(url_rss, timeout=15)
+            if resp.status_code != 200: continue
+            
+            feed = feedparser.parse(resp.content)
             nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
             for entrada in feed.entries:
                 link = entrada.get("link")
