@@ -7,7 +7,7 @@ import time
 import calendar
 import unicodedata
 from datetime import datetime, timedelta
-from flask import Flask
+from flask import Flask, request  # Se añade 'request' para capturar el Webhook
 import threading
 
 # ==============================================================================
@@ -247,7 +247,6 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
     
     for url_rss in medios_activos:
         try:
-            # DESCARGA INTEGRAL BLINDADA CON TIMEOUT TOTAL
             resp = requests.get(url_rss, timeout=15)
             if resp.status_code != 200: continue
             
@@ -313,7 +312,6 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
 
     for url_rss in medios_activos:
         try:
-            # DESCARGA INTEGRAL BLINDADA CON TIMEOUT TOTAL
             resp = requests.get(url_rss, timeout=15)
             if resp.status_code != 200: continue
             
@@ -385,143 +383,150 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
     return alertas_enviadas, nombre_lista
 
 # ==============================================================================
-# 5. ESCUCHA DE TELEGRAM EN SEGUNDO PLANO
+# 5. PROCESAMIENTO CENTRAL DE COMANDOS (LÓGICA LIMPIA)
 # ==============================================================================
-def iniciar_interfaz_bot():
+def procesar_mensaje_telegram(mensaje):
     global MODO_LISTA
-    offset = 0
-    time.sleep(5)  
-    enviar_mensaje_telegram("🤖 *Bot RSS de Monitoreo Web Operando de forma Ligera en Render*")
-
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
-            respuesta = requests.get(url, timeout=25).json()
-            if not respuesta.get("ok") or not respuesta.get("result"):
-                time.sleep(1)
-                continue
-            for actualizacion in respuesta["result"]:
-                offset = actualizacion["update_id"] + 1
-                mensaje = actualizacion.get("message", {})
-                usuario_id = mensaje.get("from", {}).get("id")
-                texto_comando = mensaje.get("text", "").strip()
-                
-                if usuario_id != CHAT_ID: continue
-                
-                if texto_comando == "/start" or texto_comando == "/ayuda":
-                    menu = (
-                        "📱 *Panel de Control RSS (Render)*\n\n"
-                        "📰 *MEDIOS WEB (RSS):*\n"
-                        "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular (Sin IA).\n"
-                        "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
-                        "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
-                        "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3 (Nuevos Medios).\n"
-                        "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
-                        "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
-                        "⚙️ *SISTEMA:*\n"
-                        "👉 `/modo` : Ver o forzar listas.\n"
-                        "👉 `/limpiar` : Vaciar historial de enlaces web."
-                    )
-                    enviar_mensaje_telegram(menu)
-                    
-                elif texto_comando.startswith("/ayer"):
-                    contenido = re.sub(r'^/ayer[\s\n]*', '', texto_comando).strip()
-                    if contenido:
-                        lineas = contenido.split("\n")
-                        nuevas_notas = [normalizar_texto(l.strip()) for l in lineas if l.strip()]
-                        existentes = cargar_noticias_manuales()
-                        existentes.extend(nuevas_notas)
-                        existentes = list(set(existentes))
-                        guardar_noticias_manuales(existentes)
-                        enviar_mensaje_telegram(f"✅ Registradas `{len(nuevas_notas)}` notas en el filtro.")
-                    else:
-                        guardar_noticias_manuales([])
-                        enviar_mensaje_telegram("🗑️ Filtro de notas manuales vaciado.")
-                        
-                elif texto_comando.startswith("/buscar "):
-                    partes = texto_comando.split(" ", 1)
-                    if len(partes) > 1:
-                        tema_a_rastrear = partes[1].strip()
-                        enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
-                        encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
-                        enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
-                        
-                elif texto_comando.startswith("/escanearb"):
-                    arg = texto_comando.replace("/escanearb", "").strip()
-                    num = re.findall(r'\d+', arg)
-                    horas = int(num[0]) if num else None
-                    if horas:
-                        enviar_mensaje_telegram(f"🔍 _Rastreando Lista 3 (Últimas {horas} horas)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_3)
-                    else:
-                        enviar_mensaje_telegram("🔍 _Rastreando Lista 3 (Corte desde 10:00 PM)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_3)
-                    enviar_mensaje_telegram(f"✅ *Escaneo Lista 3 Terminado.*\n✨ Alertas enviadas: `{total}`")
-                        
-                elif texto_comando.startswith("/escaneard"):
-                    arg = texto_comando.replace("/escaneard", "").strip()
-                    num = re.findall(r'\d+', arg)
-                    horas = int(num[0]) if num else None
-                    if horas:
-                        enviar_mensaje_telegram(f"🔍 _Rastreando Lista Fin de Semana (Últimas {horas} horas)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_FIN_DE_SEMANA)
-                    else:
-                        enviar_mensaje_telegram("🔍 _Rastreando Lista Fin de Semana (Corte desde 10:00 PM)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_FIN_DE_SEMANA)
-                    enviar_mensaje_telegram(f"✅ *Escaneo Fin de Semana Terminado.*\n✨ Alertas enviadas: `{total}`")
-                    
-                elif texto_comando.startswith("/escanearIA"):
-                    arg = texto_comando.replace("/escanearIA", "").strip()
-                    num = re.findall(r'\d+', arg)
-                    horas = int(num[0]) if num else None
-                    if horas:
-                        enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas con IA)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=True, horas_atras=horas)
-                    else:
-                        enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM con IA)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=True)
-                    enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas procesadas por IA Pro: `{total}`")
-                    
-                elif texto_comando.startswith("/escanear"):
-                    arg = texto_comando.replace("/escanear", "").strip()
-                    num = re.findall(r'\d+', arg)
-                    horas = int(num[0]) if num else None
-                    if horas:
-                        enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas)
-                    else:
-                        enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM)..._")
-                        total, _ = ejecutar_monitoreo_silencioso(usar_ia=False)
-                    enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
-                    
-                elif texto_comando == "/modo":
-                    msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3`"
-                    enviar_mensaje_telegram(msg_modo)
-                elif texto_comando == "/set_auto":
-                    MODO_LISTA = "AUTO"
-                    enviar_mensaje_telegram("🔄 Modo: `AUTOMÁTICO`")
-                elif texto_comando == "/set_lista1":
-                    MODO_LISTA = "LISTA_1"
-                    enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 1`")
-                elif texto_comando == "/set_lista2":
-                    MODO_LISTA = "LISTA_2"
-                    enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 2`")
-                elif texto_comando == "/set_lista3":
-                    MODO_LISTA = "LISTA_3"
-                    enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 3`")
-                elif texto_comando == "/limpiar":
-                    if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
-                    enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
-        except: time.sleep(2)
+    usuario_id = mensaje.get("from", {}).get("id")
+    texto_comando = mensaje.get("text", "").strip()
+    
+    if usuario_id != CHAT_ID: return
+    
+    if texto_comando == "/start" or texto_comando == "/ayuda":
+        menu = (
+            "📱 *Panel de Control RSS (WEBHOOK BLINDADO)*\n\n"
+            "📰 *MEDIOS WEB (RSS):*\n"
+            "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular.\n"
+            "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
+            "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
+            "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3 (Nuevos Medios).\n"
+            "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
+            "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
+            "⚙️ *SISTEMA:*\n"
+            "👉 `/modo` : Ver o forzar listas.\n"
+            "👉 `/limpiar` : Vaciar historial de enlaces web."
+        )
+        enviar_mensaje_telegram(menu)
+        
+    elif texto_comando.startswith("/ayer"):
+        contenido = re.sub(r'^/ayer[\s\n]*', '', texto_comando).strip()
+        if contenido:
+            lineas = contenido.split("\n")
+            nuevas_notas = [normalizar_texto(l.strip()) for l in lineas if l.strip()]
+            existentes = cargar_noticias_manuales()
+            existentes.extend(nuevas_notas)
+            existentes = list(set(existentes))
+            guardar_noticias_manuales(existentes)
+            enviar_mensaje_telegram(f"✅ Registradas `{len(nuevas_notas)}` notas en el filtro.")
+        else:
+            guardar_noticias_manuales([])
+            enviar_mensaje_telegram("🗑️ Filtro de notas manuales vaciado.")
+            
+    elif texto_comando.startswith("/buscar "):
+        partes = texto_comando.split(" ", 1)
+        if len(partes) > 1:
+            tema_a_rastrear = partes[1].strip()
+            enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
+            encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
+            enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
+            
+    elif texto_comando.startswith("/escanearb"):
+        arg = texto_comando.replace("/escanearb", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 3 (Últimas {horas} horas)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_3)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando Lista 3 (Corte desde 10:00 PM)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_3)
+        enviar_mensaje_telegram(f"✅ *Escaneo Lista 3 Terminado.*\n✨ Alertas enviadas: `{total}`")
+            
+    elif texto_comando.startswith("/escaneard"):
+        arg = texto_comando.replace("/escaneard", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Fin de Semana (Últimas {horas} horas)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_FIN_DE_SEMANA)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando Lista Fin de Semana (Corte desde 10:00 PM)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_FIN_DE_SEMANA)
+        enviar_mensaje_telegram(f"✅ *Escaneo Fin de Semana Terminado.*\n✨ Alertas enviadas: `{total}`")
+        
+    elif texto_comando.startswith("/escanearIA"):
+        arg = texto_comando.replace("/escanearIA", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas con IA)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True, horas_atras=horas)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM con IA)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True)
+        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas procesadas por IA Pro: `{total}`")
+        
+    elif texto_comando.startswith("/escanear"):
+        arg = texto_comando.replace("/escanear", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False)
+        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
+        
+    elif texto_comando == "/modo":
+        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3`"
+        enviar_mensaje_telegram(msg_modo)
+    elif texto_comando == "/set_auto":
+        MODO_LISTA = "AUTO"
+        enviar_mensaje_telegram("🔄 Modo: `AUTOMÁTICO`")
+    elif texto_comando == "/set_lista1":
+        MODO_LISTA = "LISTA_1"
+        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 1`")
+    elif texto_comando == "/set_lista2":
+        MODO_LISTA = "LISTA_2"
+        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 2`")
+    elif texto_comando == "/set_lista3":
+        MODO_LISTA = "LISTA_3"
+        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 3`")
+    elif texto_comando == "/limpiar":
+        if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
+        enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
 
 # ==============================================================================
-# 6. SERVIDOR WEB (Keep Alive de Render)
+# 6. ENRUTADOR WEB FLASK CON ACCESO AL WEBHOOK DE TELEGRAM
 # ==============================================================================
 web_app = Flask('')
+
 @web_app.route('/')
-def home(): return "Servicio RSS Operando de forma Ligera en Render"
+def home(): 
+    return "Servicio RSS Operando bajo Webhook Inmortal en Render"
+
+@web_app.route('/webhook', methods=['POST'])
+def recibe_webhook_telegram():
+    try:
+        datos_json = request.get_json()
+        if datos_json and "message" in datos_json:
+            procesar_mensaje_telegram(datos_json["message"])
+    except Exception as e:
+        print(f"⚠️ Error procesando JSON entrante: {e}")
+    return "OK", 200
+
+def registrar_webhook_en_telegram():
+    time.sleep(3)  # Esperar brevemente a que el microservicio esté en la red
+    url_webhook_propia = "https://monitor-rss-service.onrender.com/webhook"
+    url_api_telegram = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={url_webhook_propia}"
+    try:
+        requests.get(url_api_telegram, timeout=10)
+        print("🚀 [SISTEMA] Enlace de Webhook registrado correctamente en los servidores de Telegram.")
+    except:
+        print("⚠️ [SISTEMA] Intento fallido de enlazar el Webhook.")
 
 if __name__ == "__main__":
-    threading.Thread(target=iniciar_interfaz_bot, daemon=True).start()
+    threading.Thread(target=registrar_webhook_en_telegram, daemon=True).start()
     puerto = int(os.environ.get("PORT", 8080))
     web_app.run(host='0.0.0.0', port=puerto)
