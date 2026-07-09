@@ -7,7 +7,7 @@ import time
 import calendar
 import unicodedata
 from datetime import datetime, timedelta
-from flask import Flask, request  # Se añade 'request' para capturar el Webhook
+from flask import Flask, request
 import threading
 
 # ==============================================================================
@@ -156,11 +156,22 @@ ARCHIVO_HISTORIAL = "historial_noticias.json"
 ARCHIVO_MANUALES = "noticias_manuales.json"
 
 # ==============================================================================
-# 4. FUNCIONES LÓGICAS Y CONEXIÓN CON IA GEMINI
+# 4. FUNCIONES LÓGICAS, ACORTADOR Y CONEXIÓN CON IA
 # ==============================================================================
 def normalizar_texto(texto):
     if not texto: return ""
     return "".join(c for c in unicodedata.normalize('NFD', texto.lower()) if unicodedata.category(c) != 'Mn')
+
+def acortar_url(url_larga):
+    """Genera un enlace corto visible y altamente compartible"""
+    try:
+        api_url = f"http://tinyurl.com/api-create.php?url={url_larga}"
+        response = requests.get(api_url, timeout=6)
+        if response.status_code == 200 and response.text.strip():
+            return response.text.strip()
+    except:
+        pass
+    return url_larga  # Respaldo: si el acortador falla, usa la original para no detener el bot
 
 def determinar_lista_medios():
     if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
@@ -259,6 +270,7 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
                 
                 if all(palabra in texto_analisis_norm for palabra in palabras_clave):
                     link = entrada.get("link", "#")
+                    link_corto = acortar_url(link) # Acortador activado
                     analisis_ia = analizar_nota_con_ia(titulo, resumen)
                     
                     fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
@@ -280,7 +292,7 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
                         f"{analisis_ia}\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                        f"🔗 [Abrir Nota del Comunicado]({link})"
+                        f"🔗 *Enlace Compartible:* {link_corto}"
                     )
                     enviar_mensaje_telegram(mensaje)
                     coincidencias += 1
@@ -347,6 +359,7 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                 if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
                 
                 if hizo_match:
+                    link_corto = acortar_url(link) # Acortador activado
                     if usar_ia:
                         analisis_ia = analizar_nota_con_ia(titulo, resumen)
                         mensaje = (
@@ -360,7 +373,7 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                             f"{analisis_ia}\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                            f"🔗 [Abrir Nota Completa]({link})"
+                            f"🔗 *Enlace Compartible:* {link_corto}"
                         )
                     else:
                         mensaje = (
@@ -371,12 +384,12 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                             f"📝 *Título:* {titulo}\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                            f"🔗 [Abrir Nota Completa]({link})"
+                            f"🔗 *Enlace Compartible:* {link_corto}"
                         )
                     enviar_mensaje_telegram(mensaje)
                     alertas_enviadas += 1
                     time.sleep(0.4)
-                historial.append(link)
+                historial.append(link) # Guarda el link original para evitar duplicados reales
         except: continue
             
     guardar_historial(historial)
@@ -517,7 +530,7 @@ def recibe_webhook_telegram():
     return "OK", 200
 
 def registrar_webhook_en_telegram():
-    time.sleep(3)  # Esperar brevemente a que el microservicio esté en la red
+    time.sleep(3)
     url_webhook_propia = "https://monitor-rss-service.onrender.com/webhook"
     url_api_telegram = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={url_webhook_propia}"
     try:
