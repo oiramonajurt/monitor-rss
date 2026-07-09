@@ -98,6 +98,36 @@ LISTA_3 = [
     "https://laizquierdanoticias.com.mx/feed/"
 ]
 
+# NUEVA LISTA SOLICITADA OPERADA CON EL COMANDO /IVAN
+LISTA_IVAN = [
+    "https://vanguardiaveracruz.com/feed/",
+    "https://siguenzacomunica.com/feed/",
+    "https://www.cronicaveracruz.com/feed/",
+    "https://razondeveracruz.com.mx/feed/",
+    "https://www.enlacedelgolfo.com/feed/",
+    "https://lodeldia.com/feed/",
+    "https://sucesosveracruz.com.mx/feed/",
+    "https://elmonoinformativo.com.mx/feed/",
+    "https://diariodelistmo.com/feed/",
+    "https://www.elbuentono.com.mx/feed/",
+    "https://versiones.com.mx/feed/",
+    "https://formato7.com/feed/",
+    "https://lasillarota.com/veracruz/feed/",
+    "https://www.presencia.mx/feed/",
+    "https://revistafundamentos.com.mx/feed/",
+    "https://sociedadtrespuntocero.com/feed/",
+    "https://acropolismultimedios.mx/feed/",
+    "https://forotuxpan.com/feed/",
+    "https://blogexpediente.com/feed/",
+    "https://liberal.com.mx/feed/",
+    "https://elheraldodemartinez.com.mx/feed/",
+    "https://heraldodemexico.com.mx/feed/",
+    "https://www.proceso.com.mx/feed/",
+    "https://www.radioformula.com.mx/feed/",
+    "https://expansion.mx/feed/",
+    "https://www.sdpnoticias.com/feed/"
+]
+
 # ==============================================================================
 # 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
 # ==============================================================================
@@ -108,7 +138,7 @@ PARAMETROS = [
     "SEV", "Secretaría de Educación de Veracruz", "SS", "Secretaría de Salud",
     "SEFIPLAN", "Secretaría de Finanzas y Planeación", "SEDECOP", "Secretaría de Desarrollo Económico y Portuario",
     "SEDESOL", "Secretaría de Desarrollo Social", "SIOP", "Secretaría de Infraestructura y Obras Públicas",
-    "STPSP", "Secretaría de Trabajo, Previsión Social y Productividad", "SECTUR", "Secretaría de Turismo",
+    "STPSP", "Secretaría de Trabajo, Previsión Social y Productivity", "SECTUR", "Secretaría de Turismo",
     "SECVER", "Secretaría de Cultura de Veracruz", "SEDEMA", "Secretaría de Medio Ambiente",
     "SEDARPA", "Secretaría de Desarrollo Agropecuario, Rural, Pesca y Alimentación", "SPC", "Secretaría de Protección Civil",
     "Zona Norte", "Zona Centro", "Zona Sur", "Zona Altas Montañas", "Zona Totonacapan",
@@ -163,7 +193,6 @@ def normalizar_texto(texto):
     return "".join(c for c in unicodedata.normalize('NFD', texto.lower()) if unicodedata.category(c) != 'Mn')
 
 def acortar_url(url_larga):
-    """Genera un enlace corto visible y altamente compartible"""
     try:
         api_url = f"http://tinyurl.com/api-create.php?url={url_larga}"
         response = requests.get(api_url, timeout=6)
@@ -171,12 +200,13 @@ def acortar_url(url_larga):
             return response.text.strip()
     except:
         pass
-    return url_larga  # Respaldo: si el acortador falla, usa la original para no detener el bot
+    return url_larga
 
 def determinar_lista_medios():
     if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
     if MODO_LISTA == "LISTA_2": return LISTA_2, "Lista 2 (Manual)"
     if MODO_LISTA == "LISTA_3": return LISTA_3, "Lista 3 (Manual)"
+    if MODO_LISTA == "LISTA_IVAN": return LISTA_IVAN, "Lista Iván (Manual)"
     return (LISTA_2, "Lista 2 (Fin de Semana)") if datetime.today().weekday() >= 5 else (LISTA_1, "Lista 1 (Entre Semana)")
 
 def cargar_historial():
@@ -270,7 +300,7 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
                 
                 if all(palabra in texto_analisis_norm for palabra in palabras_clave):
                     link = entrada.get("link", "#")
-                    link_corto = acortar_url(link) # Acortador activado
+                    link_corto = acortar_url(link)
                     analisis_ia = analizar_nota_con_ia(titulo, resumen)
                     
                     fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
@@ -359,7 +389,7 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                 if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
                 
                 if hizo_match:
-                    link_corto = acortar_url(link) # Acortador activado
+                    link_corto = acortar_url(link)
                     if usar_ia:
                         analisis_ia = analizar_nota_con_ia(titulo, resumen)
                         mensaje = (
@@ -389,7 +419,7 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                     enviar_mensaje_telegram(mensaje)
                     alertas_enviadas += 1
                     time.sleep(0.4)
-                historial.append(link) # Guarda el link original para evitar duplicados reales
+                historial.append(link)
         except: continue
             
     guardar_historial(historial)
@@ -412,7 +442,8 @@ def procesar_mensaje_telegram(mensaje):
             "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular.\n"
             "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
             "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
-            "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3 (Nuevos Medios).\n"
+            "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3.\n"
+            "👉 `/ivan` o `/ivan X` : Rastreo estándar Lista Iván.\n"
             "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
             "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
             "⚙️ *SISTEMA:*\n"
@@ -442,6 +473,18 @@ def procesar_mensaje_telegram(mensaje):
             enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
             encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
             enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
+
+    elif texto_comando.startswith("/ivan"):
+        arg = texto_comando.replace("/ivan", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Iván (Últimas {horas} horas)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_IVAN)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando Lista Iván (Corte desde 10:00 PM)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_IVAN)
+        enviar_mensaje_telegram(f"✅ *Escaneo Lista Iván Terminado.*\n✨ Alertas enviadas: `{total}`")
             
     elif texto_comando.startswith("/escanearb"):
         arg = texto_comando.replace("/escanearb", "").strip()
@@ -492,7 +535,7 @@ def procesar_mensaje_telegram(mensaje):
         enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
         
     elif texto_comando == "/modo":
-        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3`"
+        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3` | `/set_ivan`"
         enviar_mensaje_telegram(msg_modo)
     elif texto_comando == "/set_auto":
         MODO_LISTA = "AUTO"
@@ -506,6 +549,9 @@ def procesar_mensaje_telegram(mensaje):
     elif texto_comando == "/set_lista3":
         MODO_LISTA = "LISTA_3"
         enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 3`")
+    elif texto_comando == "/set_ivan":
+        MODO_LISTA = "LISTA_IVAN"
+        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA IVÁN`")
     elif texto_comando == "/limpiar":
         if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
         enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
