@@ -19,6 +19,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 MODO_LISTA = "AUTO" 
 
+# Headers para simular un navegador web real y evitar bloqueos (403 Forbidden)
+HEADERS_HTTP = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 # ==============================================================================
 # 2. DEFINICIÓN DE LISTAS DE MEDIOS RSS
 # ==============================================================================
@@ -98,7 +103,6 @@ LISTA_3 = [
     "https://laizquierdanoticias.com.mx/feed/"
 ]
 
-# NUEVA LISTA SOLICITADA OPERADA CON EL COMANDO /IVAN
 LISTA_IVAN = [
     "https://vanguardiaveracruz.com/feed/",
     "https://siguenzacomunica.com/feed/",
@@ -186,21 +190,29 @@ ARCHIVO_HISTORIAL = "historial_noticias.json"
 ARCHIVO_MANUALES = "noticias_manuales.json"
 
 # ==============================================================================
-# 4. FUNCIONES LÓGICAS, ACORTADOR Y CONEXIÓN CON IA
+# 4. FUNCIONES LÓGICAS Y CONEXIÓN CON IA
 # ==============================================================================
 def normalizar_texto(texto):
     if not texto: return ""
     return "".join(c for c in unicodedata.normalize('NFD', texto.lower()) if unicodedata.category(c) != 'Mn')
 
+# Se desactivó el acortador a petición directa para devolver el enlace original completo
 def acortar_url(url_larga):
+    return url_larga
+
+def obtener_feed_rss(url_rss):
+    """Petición robusta con headers para evitar bloqueos 403 y 406"""
     try:
-        api_url = f"http://tinyurl.com/api-create.php?url={url_larga}"
-        response = requests.get(api_url, timeout=6)
-        if response.status_code == 200 and response.text.strip():
-            return response.text.strip()
+        resp = requests.get(url_rss, headers=HEADERS_HTTP, timeout=12)
+        if resp.status_code == 200:
+            return feedparser.parse(resp.content)
     except:
         pass
-    return url_larga
+    # Intento directo si requests falla
+    try:
+        return feedparser.parse(url_rss)
+    except:
+        return None
 
 def determinar_lista_medios():
     if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
@@ -250,7 +262,7 @@ def analizar_nota_con_ia(titulo, resumen):
     
     prompt = (
         f"Eres un analista de comunicación política experto en el estado de Veracruz. "
-        f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera estrictamente lo siguiente:\n"
+        f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera strictly lo siguiente:\n"
         f"1) Un resumen ejecutivo muy conciso en exactamente 3 viñetas cortas.\n"
         f"2) Sentimiento de la nota hacia la administración pública (Positivo, Neutral o Negativo).\n"
         f"3) Nivel de Riesgo Político o Potencial Crisis para el Gobierno del Estado (Bajo, Medio o Alto) con una breve línea del porqué.\n\n"
@@ -287,47 +299,44 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
     coincidencias = 0
     
     for url_rss in medios_activos:
-        try:
-            resp = requests.get(url_rss, timeout=15)
-            if resp.status_code != 200: continue
+        feed = obtener_feed_rss(url_rss)
+        if not feed or not hasattr(feed, 'entries'): continue
+        
+        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
+        for entrada in feed.entries:
+            titulo = entrada.get("title", "")
+            resumen = entrada.get("summary", "")
+            texto_analisis_norm = normalizar_texto(titulo + " " + resumen)
             
-            feed = feedparser.parse(resp.content)
-            nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
-            for entrada in feed.entries:
-                titulo = entrada.get("title", "")
-                resumen = entrada.get("summary", "")
-                texto_analisis_norm = normalizar_texto(titulo + " " + resumen)
+            if all(palabra in texto_analisis_norm for palabra in palabras_clave):
+                link = entrada.get("link", "#")
+                link_corto = acortar_url(link)
+                analisis_ia = analizar_nota_con_ia(titulo, resumen)
                 
-                if all(palabra in texto_analisis_norm for palabra in palabras_clave):
-                    link = entrada.get("link", "#")
-                    link_corto = acortar_url(link)
-                    analisis_ia = analizar_nota_con_ia(titulo, resumen)
-                    
-                    fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
-                    if fecha_parsed:
-                        dt_utc = datetime(*fecha_parsed[:6])
-                        dt_veracruz = dt_utc - timedelta(hours=6)
-                        timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
-                    else:
-                        timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
-                    
-                    mensaje = (
-                        f"🔥 *HALLAZGO PRIORITARIO / COMUNICADO*\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 *Medio:* {nombre_medio}\n"
-                        f"🎯 *Idea Central Investigada:* `{tema_objetivo}`\n"
-                        f"📝 *Título:* {titulo}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
-                        f"{analisis_ia}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                        f"🔗 *Enlace Compartible:* {link_corto}"
-                    )
-                    enviar_mensaje_telegram(mensaje)
-                    coincidencias += 1
-                    time.sleep(0.5)
-        except: continue
+                fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
+                if fecha_parsed:
+                    dt_utc = datetime(*fecha_parsed[:6])
+                    dt_veracruz = dt_utc - timedelta(hours=6)
+                    timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
+                else:
+                    timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
+                
+                mensaje = (
+                    f"🔥 *HALLAZGO PRIORITARIO / COMUNICADO*\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 *Medio:* {nombre_medio}\n"
+                    f"🎯 *Idea Central Investigada:* `{tema_objetivo}`\n"
+                    f"📝 *Título:* {titulo}\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
+                    f"{analisis_ia}\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"🕒 _Publicado a las {timestamp_noticia}_\n"
+                    f"🔗 *Enlace:* {link_corto}"
+                )
+                enviar_mensaje_telegram(mensaje)
+                coincidencias += 1
+                time.sleep(0.5)
     return coincidencias
 
 def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada=None):
@@ -353,80 +362,77 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
         epoch_threshold = calendar.timegm((fecha_10pm_veracruz + timedelta(hours=6)).utctimetuple())
 
     for url_rss in medios_activos:
-        try:
-            resp = requests.get(url_rss, timeout=15)
-            if resp.status_code != 200: continue
+        feed = obtener_feed_rss(url_rss)
+        if not feed or not hasattr(feed, 'entries'): continue
+        
+        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
+        for entrada in feed.entries:
+            link = entrada.get("link")
+            if not link or link in historial: continue
             
-            feed = feedparser.parse(resp.content)
-            nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
-            for entrada in feed.entries:
-                link = entrada.get("link")
-                if not link or link in historial: continue
-                
-                titulo = entrada.get("title", "")
-                resumen = entrada.get("summary", "")
-                titulo_norm = normalizar_texto(titulo)
-                
-                if any(linea_manual in titulo_norm for linea_manual in noticias_manuales if len(linea_manual) > 8):
-                    continue
-                
-                fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
-                timestamp_noticia = None
-                
-                if fecha_parsed:
-                    try:
-                        nota_epoch = calendar.timegm(fecha_parsed)
-                        if nota_epoch < epoch_threshold: continue 
-                        dt_utc = datetime(*fecha_parsed[:6])
-                        dt_veracruz = dt_utc - timedelta(hours=6)
-                        timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
-                    except: pass
-                
-                if not timestamp_noticia:
-                    timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
+            titulo = entrada.get("title", "")
+            resumen = entrada.get("summary", "")
+            titulo_norm = normalizar_texto(titulo)
+            
+            if any(linea_manual in titulo_norm for linea_manual in noticias_manuales if len(linea_manual) > 8):
+                continue
+            
+            fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
+            timestamp_noticia = None
+            
+            if fecha_parsed:
+                try:
+                    nota_epoch = calendar.timegm(fecha_parsed)
+                    if nota_epoch < epoch_threshold: continue 
+                    dt_utc = datetime(*fecha_parsed[:6])
+                    dt_veracruz = dt_utc - timedelta(hours=6)
+                    timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
+                except: pass
+            
+            if not timestamp_noticia:
+                timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
 
-                hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETROS)
-                if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
-                
-                if hizo_match:
-                    link_corto = acortar_url(link)
-                    if usar_ia:
-                        analisis_ia = analizar_nota_con_ia(titulo, resumen)
-                        mensaje = (
-                            f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (CON IA)*\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 *Medio:* {nombre_medio}\n"
-                            f"🎯 *Match:* `{kw_detectada}`\n"
-                            f"📝 *Título:* {titulo}\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
-                            f"{analisis_ia}\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                            f"🔗 *Enlace Compartible:* {link_corto}"
-                        )
-                    else:
-                        mensaje = (
-                            f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (ESTÁNDAR)*\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 *Medio:* {nombre_medio}\n"
-                            f"🎯 *Match:* `{kw_detectada}`\n"
-                            f"📝 *Título:* {titulo}\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                            f"🔗 *Enlace Compartible:* {link_corto}"
-                        )
-                    enviar_mensaje_telegram(mensaje)
-                    alertas_enviadas += 1
-                    time.sleep(0.4)
-                historial.append(link)
-        except: continue
+            hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETROS)
+            if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
+            
+            if hizo_match:
+                link_corto = acortar_url(link)
+                if usar_ia:
+                    analisis_ia = analizar_nota_con_ia(titulo, resumen)
+                    mensaje = (
+                        f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (CON IA)*\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 *Medio:* {nombre_medio}\n"
+                        f"🎯 *Match:* `{kw_detectada}`\n"
+                        f"📝 *Título:* {titulo}\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
+                        f"{analisis_ia}\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🕒 _Publicado a las {timestamp_noticia}_\n"
+                        f"🔗 *Enlace:* {link_corto}"
+                    )
+                else:
+                    mensaje = (
+                        f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (ESTÁNDAR)*\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 *Medio:* {nombre_medio}\n"
+                        f"🎯 *Match:* `{kw_detectada}`\n"
+                        f"📝 *Título:* {titulo}\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🕒 _Publicado a las {timestamp_noticia}_\n"
+                        f"🔗 *Enlace:* {link_corto}"
+                    )
+                enviar_mensaje_telegram(mensaje)
+                alertas_enviadas += 1
+                time.sleep(0.4)
+            historial.append(link)
             
     guardar_historial(historial)
     return alertas_enviadas, nombre_lista
 
 # ==============================================================================
-# 5. PROCESAMIENTO CENTRAL DE COMANDOS (LÓGICA LIMPIA)
+# 5. PROCESAMIENTO CENTRAL DE COMANDOS
 # ==============================================================================
 def procesar_mensaje_telegram(mensaje):
     global MODO_LISTA
@@ -567,10 +573,12 @@ def home():
 
 @web_app.route('/webhook', methods=['POST'])
 def recibe_webhook_telegram():
+    """Responde inmediatamente 200 OK a Telegram y procesa en un hilo secundario para evitar duplicados."""
     try:
         datos_json = request.get_json()
         if datos_json and "message" in datos_json:
-            procesar_mensaje_telegram(datos_json["message"])
+            # Procesar el comando de Telegram de fondo en un hilo separado
+            threading.Thread(target=procesar_mensaje_telegram, args=(datos_json["message"],), daemon=True).start()
     except Exception as e:
         print(f"⚠️ Error procesando JSON entrante: {e}")
     return "OK", 200
