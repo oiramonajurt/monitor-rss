@@ -19,7 +19,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 MODO_LISTA = "AUTO" 
 
-# Headers para simular un navegador web real y evitar bloqueos (403 Forbidden)
 HEADERS_HTTP = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -132,6 +131,34 @@ LISTA_IVAN = [
     "https://www.sdpnoticias.com/feed/"
 ]
 
+# NUEVA LISTA 5 (URLs optimizadas para feeds RSS)
+LISTA_5 = [
+    "https://billieparkernoticias.com/feed/",
+    "https://imagendelgolfo.mx/feed/",
+    "https://noreste.net/feed/",
+    "https://www.noticiasperfil.com/feed/",
+    "https://mxnoticiero.com/feed/",
+    "https://ventanaver.mx/feed/",
+    "https://www.loseditores.com/feed/",
+    "https://municipiosur.com/feed/",
+    "https://www.alcalorpolitico.com/rss/",
+    "https://www.olivanoticias.com/feed/",
+    "https://encontacto.com.mx/feed/",
+    "https://cronicadexalapa.com.mx/feed/",
+    "https://periodicoveraz.com/feed/",
+    "https://libertadbajopalabra.com/feed/",
+    "https://graficoaldia.mx/feed/",
+    "https://plumaslibres.com.mx/feed/",
+    "https://elportal.mx/feed/",
+    "https://www.elchiltepin.com/feed/",
+    "https://coatzadiario.com/feed/",
+    "https://www.reforma.com/rss/portada.xml",
+    "https://www.infobae.com/feeds/rss/mexico/",
+    "https://www.elimparcial.com/rss/feed.html",
+    "https://lopezdoriga.com/feed/",
+    "https://contralinea.com.mx/feed/"
+]
+
 # ==============================================================================
 # 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
 # ==============================================================================
@@ -196,19 +223,16 @@ def normalizar_texto(texto):
     if not texto: return ""
     return "".join(c for c in unicodedata.normalize('NFD', texto.lower()) if unicodedata.category(c) != 'Mn')
 
-# Se desactivó el acortador a petición directa para devolver el enlace original completo
 def acortar_url(url_larga):
     return url_larga
 
 def obtener_feed_rss(url_rss):
-    """Petición robusta con headers para evitar bloqueos 403 y 406"""
     try:
         resp = requests.get(url_rss, headers=HEADERS_HTTP, timeout=12)
         if resp.status_code == 200:
             return feedparser.parse(resp.content)
     except:
         pass
-    # Intento directo si requests falla
     try:
         return feedparser.parse(url_rss)
     except:
@@ -219,6 +243,7 @@ def determinar_lista_medios():
     if MODO_LISTA == "LISTA_2": return LISTA_2, "Lista 2 (Manual)"
     if MODO_LISTA == "LISTA_3": return LISTA_3, "Lista 3 (Manual)"
     if MODO_LISTA == "LISTA_IVAN": return LISTA_IVAN, "Lista Iván (Manual)"
+    if MODO_LISTA == "LISTA_5": return LISTA_5, "Lista 5 (Manual)"
     return (LISTA_2, "Lista 2 (Fin de Semana)") if datetime.today().weekday() >= 5 else (LISTA_1, "Lista 1 (Entre Semana)")
 
 def cargar_historial():
@@ -262,7 +287,7 @@ def analizar_nota_con_ia(titulo, resumen):
     
     prompt = (
         f"Eres un analista de comunicación política experto en el estado de Veracruz. "
-        f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera strictly lo siguiente:\n"
+        f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera estrictamente lo siguiente:\n"
         f"1) Un resumen ejecutivo muy conciso en exactamente 3 viñetas cortas.\n"
         f"2) Sentimiento de la nota hacia la administración pública (Positivo, Neutral o Negativo).\n"
         f"3) Nivel de Riesgo Político o Potencial Crisis para el Gobierno del Estado (Bajo, Medio o Alto) con una breve línea del porqué.\n\n"
@@ -450,6 +475,7 @@ def procesar_mensaje_telegram(mensaje):
             "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
             "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3.\n"
             "👉 `/ivan` o `/ivan X` : Rastreo estándar Lista Iván.\n"
+            "👉 `/lista5` o `/lista5 X` : Rastreo estándar Lista 5 (Nueva).\n"
             "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
             "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
             "⚙️ *SISTEMA:*\n"
@@ -479,6 +505,18 @@ def procesar_mensaje_telegram(mensaje):
             enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
             encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
             enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
+
+    elif texto_comando.startswith("/lista5"):
+        arg = texto_comando.replace("/lista5", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        if horas:
+            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 5 (Últimas {horas} horas)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_5)
+        else:
+            enviar_mensaje_telegram("🔍 _Rastreando Lista 5 (Corte desde 10:00 PM)..._")
+            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_5)
+        enviar_mensaje_telegram(f"✅ *Escaneo Lista 5 Terminado.*\n✨ Alertas enviadas: `{total}`")
 
     elif texto_comando.startswith("/ivan"):
         arg = texto_comando.replace("/ivan", "").strip()
@@ -541,7 +579,7 @@ def procesar_mensaje_telegram(mensaje):
         enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
         
     elif texto_comando == "/modo":
-        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3` | `/set_ivan`"
+        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3` | `/set_ivan` | `/set_lista5`"
         enviar_mensaje_telegram(msg_modo)
     elif texto_comando == "/set_auto":
         MODO_LISTA = "AUTO"
@@ -558,6 +596,9 @@ def procesar_mensaje_telegram(mensaje):
     elif texto_comando == "/set_ivan":
         MODO_LISTA = "LISTA_IVAN"
         enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA IVÁN`")
+    elif texto_comando == "/set_lista5":
+        MODO_LISTA = "LISTA_5"
+        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 5`")
     elif texto_comando == "/limpiar":
         if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
         enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
@@ -573,11 +614,9 @@ def home():
 
 @web_app.route('/webhook', methods=['POST'])
 def recibe_webhook_telegram():
-    """Responde inmediatamente 200 OK a Telegram y procesa en un hilo secundario para evitar duplicados."""
     try:
         datos_json = request.get_json()
         if datos_json and "message" in datos_json:
-            # Procesar el comando de Telegram de fondo en un hilo separado
             threading.Thread(target=procesar_mensaje_telegram, args=(datos_json["message"],), daemon=True).start()
     except Exception as e:
         print(f"⚠️ Error procesando JSON entrante: {e}")
