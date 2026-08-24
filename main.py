@@ -9,6 +9,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from flask import Flask, request
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==============================================================================
 # 1. CONFIGURACIÓN E IDENTIFICACIÓN (Variables de Entorno de Render)
@@ -17,34 +18,53 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = int(os.environ.get("CHAT_ID", "1468116225"))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-MODO_LISTA = "AUTO" 
+MODO_LISTA = "AUTO"
 
 HEADERS_HTTP = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-MX,es-ES;q=0.9,es;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache"
 }
+
+# Nº de hilos simultáneos al descargar feeds. 8 es un buen balance entre
+# velocidad y no saturar la salida de red del hosting.
+MAX_HILOS_FETCH = 8
+# Reintentos por cada feed antes de darlo por fallido.
+INTENTOS_POR_FEED = 2
 
 # ==============================================================================
 # 2. DEFINICIÓN DE LISTAS DE MEDIOS RSS
 # ==============================================================================
 LISTA_1 = [
-    "https://veracruz.quadratin.com.mx/feed/",
-    "https://golpepolitico.com/feed/",
-    "https://imagendeveracruz.mx/feed/",
-    "https://niusdeveracruz.com/feed/",
-    "https://e-veracruz.mx/rss",
-    "https://forocoatza.com/feed/",
-    "https://www.lapoliticaenrosa.com/feed/",
-    "https://coatzadigital.mx/feed/",
-    "https://surestesur.com/feed/",
-    "https://www.imagenypolitica.com/feed/",
-    "https://diariodelistmo.com/feed/",
-    "https://sietediasnoticias.com/feed/",
-    "https://laopinion.net/feed/",
-    "https://heraldodexalapa.com.mx/feed/",
-    "https://www.jornada.com.mx/rss/edicion.xml",
-    "https://www.razon.com.mx/feed/",
-    "https://www.excelsior.com.mx/rss.xml",
-    "https://mvsnoticias.com/feed/"
+    "https://coatzadiario.com/feed/",
+    "https://coatzahoy.com/feed/",
+    "https://www.elpinero.mx/feed/",
+    "https://elementosmx.com/feed/",
+    "https://www.enprivadoveracruz.com.mx/feed/",
+    "https://www.firmas.mx/feed/",
+    "https://horacero.mx/feed/",
+    "https://jornadaveracruz.com.mx/feed/",
+    "https://www.politicaaldia.com/feed/",
+    "https://tvsureste.com/feed/",
+    "https://alornoticias.com.mx/feed/",
+    "https://avcnoticias.com.mx/feed/",
+    "https://blogexpediente.com/feed/",
+    "https://cambiodigitalnoticias.com/feed/",
+    "https://cronicadelpoder.com/feed/",
+    "https://diariodexalapa.com.mx/rss.xml",
+    "https://diariolostuxtlas.com/feed/",
+    "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml",
+    "https://www.eluniversal.com.mx/arc/outboundfeeds/rss/?outputType=xml",
+    "https://graficoaldia.mx/feed/",
+    "https://elheraldodemartinez.com.mx/feed/",
+    "https://lasillarota.com/rss/veracruz.xml",
+    "https://latinus.us/feed/",
+    "https://www.masnoticias.mx/feed/",
+    "https://www.nmas.com.mx/rss/",
+    "https://palabrasclaras.mx/feed/",
+    "https://sociedadtrespuntocero.com/feed/",
+    "https://xeu.mx/feed/"
 ]
 
 LISTA_2 = [
@@ -58,7 +78,7 @@ LISTA_FIN_DE_SEMANA = [
     "https://www.elbuentono.com.mx/feed/",
     "https://veracruz.quadratin.com.mx/feed/",
     "https://www.alcalorpolitico.com/rss/",
-    "https://www.diariodexalapa.com.mx/rss/",
+    "https://diariodexalapa.com.mx/rss.xml",
     "https://horacero.mx/feed/",
     "https://diariodelistmo.com/feed/",
     "https://ventanaver.mx/feed/",
@@ -82,8 +102,7 @@ LISTA_3 = [
     "https://vanguardiaveracruz.com/feed/",
     "https://www.firmas.mx/feed/",
     "https://cambiodigitalnoticias.com/feed/",
-    "https://www.diariodexalapa.com.mx/rss/",
-    "https://x.gd/EDfoM",  
+    "https://diariodexalapa.com.mx/rss.xml",
     "https://cronicadelpoder.com/feed/",
     "https://siguenzacomunica.com/feed/",
     "https://www.cronicaveracruz.com/feed/",
@@ -97,7 +116,7 @@ LISTA_3 = [
     "https://www.elbuentono.com.mx/feed/",
     "https://versiones.com.mx/feed/",
     "https://formato7.com/feed/",
-    "https://lasillarota.com/veracruz/feed/",
+    "https://lasillarota.com/rss/veracruz.xml",
     "https://presencianoticias.com/feed/",
     "https://laizquierdanoticias.com.mx/feed/"
 ]
@@ -115,7 +134,7 @@ LISTA_IVAN = [
     "https://www.elbuentono.com.mx/feed/",
     "https://versiones.com.mx/feed/",
     "https://formato7.com/feed/",
-    "https://lasillarota.com/veracruz/feed/",
+    "https://lasillarota.com/rss/veracruz.xml",
     "https://www.presencia.mx/feed/",
     "https://revistafundamentos.com.mx/feed/",
     "https://sociedadtrespuntocero.com/feed/",
@@ -131,7 +150,6 @@ LISTA_IVAN = [
     "https://www.sdpnoticias.com/feed/"
 ]
 
-# NUEVA LISTA 5 (URLs optimizadas para feeds RSS)
 LISTA_5 = [
     "https://billieparkernoticias.com/feed/",
     "https://imagendelgolfo.mx/feed/",
@@ -173,43 +191,43 @@ PARAMETROS = [
     "SECVER", "Secretaría de Cultura de Veracruz", "SEDEMA", "Secretaría de Medio Ambiente",
     "SEDARPA", "Secretaría de Desarrollo Agropecuario, Rural, Pesca y Alimentación", "SPC", "Secretaría de Protección Civil",
     "Zona Norte", "Zona Centro", "Zona Sur", "Zona Altas Montañas", "Zona Totonacapan",
-    "Acajete", "Acatlán", "Acayucan", "Actopan", "Acula", "Acultzingo", "Agua Dulce", 
-    "Álamo Temapache", "Alpatláhuac", "Alto Lucero", "Altotonga", "Alvarado", "Amatitlán", 
-    "Amatlán de los Reyes", "Ángel R. Cabada", "Apazapan", "Aquila", "Astacinga", 
-    "Atlahuilco", "Atoyac", "Atzacan", "Atzalan", "Ayahualulco", "Banderilla", 
-    "Benito Juárez", "Boca del Río", "Calcahualco", "Camerino Z. Mendoza", 
-    "Carlos A. Carrillo", "Carrillo Puerto", "Catemaco", "Cazones de Herrera", 
-    "Cerro Azul", "Chacaltianguis", "Chalma", "Chiconamel", "Chiconquiaco", 
-    "Chicontepec", "Chinameca", "Chinampa de Gorostiza", "Chocamán", "Chontla", 
-    "Chumatlán", "Coacoatzintla", "Coahuitlán", "Coatepec", "Coatzacoalcos", 
-    "Coatzintla", "Comapa", "Córdoba", "Cosamaloapan", "Cosautlán de Carvajal", 
-    "Coscomatepec", "Cosoleacaque", "Cotaxtla", "Coxquihui", "Coyutla", "Cuichapa", 
-    "Cuitláhuac", "El Higo", "Emiliano Zapata", "Espinal", "Filomeno Mata", "Fortín", 
-    "Gutiérrez Zamora", "Hidalgotitlán", "Huatusco", "Huayacocotla", "Hueyapan de Ocampo", 
-    "Huiloapan", "Ignacio de la Llave", "Ilamatlán", "Isla", "Ixcatepec", 
-    "Ixhuacán de los Reyes", "Ixhuatlán de Madero", "Ixhuatlán del Café", 
-    "Ixhuatlán del Sureste", "Ixmatlahuacan", "Ixtaczoquitlán", "Jalacingo", 
-    "Jalcomulco", "Jáltipan", "Jamapa", "Jesús Carranza", "Jilotepec", "José Azueta", 
-    "Juan Rodríguez Clara", "Juchique de Ferrer", "Landero y Coss", "Las Choapas", 
-    "Las Minas", "Las Vigas", "Lerdo de Tejada", "Los Reyes", "Magdalena", 
-    "Maltrata", "Mariano Escobedo", "Martínez de la Torre", "Mecayapan", "Mecatlán", 
-    "Miahuatlán", "Minatitlán", "Misantla", "Mixtla de Altamirano", "Moloacán", 
-    "Naranjal", "Naranjos Amatlán", "Naolinco", "Nanchital", "Nautla", "Nogales", 
-    "Oluta", "Omealca", "Orizaba", "Otatitlán", "Oteapan", "Ozuluama", "Pajapan", 
-    "Pánuco", "Papantla", "Paso del Macho", "Paso de Ovejas", "Perote", 
-    "Platón Sánchez", "Playa Vicente", "Poza Rica", "Pueblo Viejo", "Puente Nacional", 
-    "Rafael Delgado", "Rafael Lucio", "Río Blanco", "Saltabarranca", 
-    "San Andrés Tenejapan", "San Andrés Tuxtla", "San Juan Evangelista", 
-    "Santiago Tuxtla", "Santiago Sochiapan", "Sayula de Alemán", "Soconusco", 
-    "Sochiapa", "Soledad Atzompa", "Soledad de Doblado", "Soteapan", "Tamalín", 
-    "Tamiahua", "Tampico Alto", "Tancoco", "Tantima", "Tantoyuca", "Tatahuicapan", 
-    "Tatatila", "Tecolutla", "Tehuipango", "Tempoal", "Tenampa", "Tenochtitlán", 
-    "Teocelo", "Tepatlaxco", "Tepetlán", "Tepetzintla", "Tequila", "Texcatepec", 
-    "Texhuacán", "Texistepec", "Tezonapa", "Tierra Blanca", "Tihuatlán", 
-    "Tlachichilco", "Tlacojalpan", "Tlacolulan", "Tlacotalpan", "Tlacotepec de Mejía", 
-    "Tlaltetela", "Tlapacoyan", "Tlaquilpa", "Tlilapan", "Tomatlán", "Tonayán", 
-    "Totutla", "Tres Valles", "Tuxpan", "Tuxtilla", "Úrsulo Galván", "Vega de Alatorre", 
-    "Veracruz", "Villa Aldama", "Xalapa", "Xico", "Xoxocotla", "Yanga", "Yecuatla", 
+    "Acajete", "Acatlán", "Acayucan", "Actopan", "Acula", "Acultzingo", "Agua Dulce",
+    "Álamo Temapache", "Alpatláhuac", "Alto Lucero", "Altotonga", "Alvarado", "Amatitlán",
+    "Amatlán de los Reyes", "Ángel R. Cabada", "Apazapan", "Aquila", "Astacinga",
+    "Atlahuilco", "Atoyac", "Atzacan", "Atzalan", "Ayahualulco", "Banderilla",
+    "Benito Juárez", "Boca del Río", "Calcahualco", "Camerino Z. Mendoza",
+    "Carlos A. Carrillo", "Carrillo Puerto", "Catemaco", "Cazones de Herrera",
+    "Cerro Azul", "Chacaltianguis", "Chalma", "Chiconamel", "Chiconquiaco",
+    "Chicontepec", "Chinameca", "Chinampa de Gorostiza", "Chocamán", "Chontla",
+    "Chumatlán", "Coacoatzintla", "Coahuitlán", "Coatepec", "Coatzacoalcos",
+    "Coatzintla", "Comapa", "Córdoba", "Cosamaloapan", "Cosautlán de Carvajal",
+    "Coscomatepec", "Cosoleacaque", "Cotaxtla", "Coxquihui", "Coyutla", "Cuichapa",
+    "Cuitláhuac", "El Higo", "Emiliano Zapata", "Espinal", "Filomeno Mata", "Fortín",
+    "Gutiérrez Zamora", "Hidalgotitlán", "Huatusco", "Huayacocotla", "Hueyapan de Ocampo",
+    "Huiloapan", "Ignacio de la Llave", "Ilamatlán", "Isla", "Ixcatepec",
+    "Ixhuacán de los Reyes", "Ixhuatlán de Madero", "Ixhuatlán del Café",
+    "Ixhuatlán del Sureste", "Ixmatlahuacan", "Ixtaczoquitlán", "Jalacingo",
+    "Jalcomulco", "Jáltipan", "Jamapa", "Jesús Carranza", "Jilotepec", "José Azueta",
+    "Juan Rodríguez Clara", "Juchique de Ferrer", "Landero y Coss", "Las Choapas",
+    "Las Minas", "Las Vigas", "Lerdo de Tejada", "Los Reyes", "Magdalena",
+    "Maltrata", "Mariano Escobedo", "Martínez de la Torre", "Mecayapan", "Mecatlán",
+    "Miahuatlán", "Minatitlán", "Misantla", "Mixtla de Altamirano", "Moloacán",
+    "Naranjal", "Naranjos Amatlán", "Naolinco", "Nanchital", "Nautla", "Nogales",
+    "Oluta", "Omealca", "Orizaba", "Otatitlán", "Oteapan", "Ozuluama", "Pajapan",
+    "Pánuco", "Papantla", "Paso del Macho", "Paso de Ovejas", "Perote",
+    "Platón Sánchez", "Playa Vicente", "Poza Rica", "Pueblo Viejo", "Puente Nacional",
+    "Rafael Delgado", "Rafael Lucio", "Río Blanco", "Saltabarranca",
+    "San Andrés Tenejapan", "San Andrés Tuxtla", "San Juan Evangelista",
+    "Santiago Tuxtla", "Santiago Sochiapan", "Sayula de Alemán", "Soconusco",
+    "Sochiapa", "Soledad Atzompa", "Soledad de Doblado", "Soteapan", "Tamalín",
+    "Tamiahua", "Tampico Alto", "Tancoco", "Tantima", "Tantoyuca", "Tatahuicapan",
+    "Tatatila", "Tecolutla", "Tehuipango", "Tempoal", "Tenampa", "Tenochtitlán",
+    "Teocelo", "Tepatlaxco", "Tepetlán", "Tepetzintla", "Tequila", "Texcatepec",
+    "Texhuacán", "Texistepec", "Tezonapa", "Tierra Blanca", "Tihuatlán",
+    "Tlachichilco", "Tlacojalpan", "Tlacolulan", "Tlacotalpan", "Tlacotepec de Mejía",
+    "Tlaltetela", "Tlapacoyan", "Tlaquilpa", "Tlilapan", "Tomatlán", "Tonayán",
+    "Totutla", "Tres Valles", "Tuxpan", "Tuxtilla", "Úrsulo Galván", "Vega de Alatorre",
+    "Veracruz", "Villa Aldama", "Xalapa", "Xico", "Xoxocotla", "Yanga", "Yecuatla",
     "Zacualpan", "Zaragoza", "Zentla", "Zongolica", "Zontecomatlán", "Zozocolco"
 ]
 
@@ -226,17 +244,71 @@ def normalizar_texto(texto):
 def acortar_url(url_larga):
     return url_larga
 
-def obtener_feed_rss(url_rss):
+def nombre_corto_medio(url_rss):
+    """Extrae un nombre legible del dominio para reportar fallos."""
     try:
-        resp = requests.get(url_rss, headers=HEADERS_HTTP, timeout=12)
-        if resp.status_code == 200:
-            return feedparser.parse(resp.content)
-    except:
-        pass
-    try:
-        return feedparser.parse(url_rss)
-    except:
-        return None
+        return url_rss.split("//")[-1].split("/")[0]
+    except Exception:
+        return url_rss
+
+def obtener_feed_rss(url_rss, intentos=INTENTOS_POR_FEED):
+    """
+    Intenta descargar y parsear un feed RSS.
+    Reintenta hasta `intentos` veces (con pequeño backoff) combinando
+    petición HTTP directa + fallback a feedparser nativo.
+    Devuelve SIEMPRE una tupla (feed_parseado_o_None, mensaje_error_o_None).
+    """
+    ultimo_error = "Error desconocido"
+
+    for intento in range(1, intentos + 1):
+        # --- Intento vía requests (más control de headers/timeout) ---
+        try:
+            session = requests.Session()
+            resp = session.get(url_rss, headers=HEADERS_HTTP, timeout=15, verify=False)
+            if resp.status_code == 200:
+                parsed = feedparser.parse(resp.content)
+                if hasattr(parsed, 'entries') and len(parsed.entries) > 0:
+                    return parsed, None
+                ultimo_error = "HTTP 200 pero 0 entradas en el feed"
+            else:
+                ultimo_error = f"HTTP {resp.status_code}"
+        except Exception as e:
+            ultimo_error = f"Error de conexión: {e}"
+
+        # --- Fallback vía feedparser directo ---
+        try:
+            parsed = feedparser.parse(url_rss, request_headers=HEADERS_HTTP)
+            if hasattr(parsed, 'entries') and len(parsed.entries) > 0:
+                return parsed, None
+            if parsed.get("bozo"):
+                ultimo_error = f"Feed inválido (bozo): {parsed.get('bozo_exception', 'desconocido')}"
+        except Exception as e:
+            ultimo_error = f"Error feedparser directo: {e}"
+
+        if intento < intentos:
+            print(f"↻ Reintentando ({intento}/{intentos}) {url_rss} — motivo: {ultimo_error}")
+            time.sleep(1.5)
+
+    print(f"⚠️ [FALLO DEFINITIVO] {url_rss}: {ultimo_error}")
+    return None, ultimo_error
+
+def descargar_feeds_en_paralelo(lista_urls):
+    """
+    Descarga todos los feeds de una lista en paralelo usando un pool de hilos.
+    Devuelve un diccionario { url: (feed_o_None, error_o_None) } con UNA entrada
+    por cada URL de la lista, garantizando que ninguna quede sin intentar.
+    """
+    resultados = {}
+    with ThreadPoolExecutor(max_workers=MAX_HILOS_FETCH) as executor:
+        futuros = {executor.submit(obtener_feed_rss, url): url for url in lista_urls}
+        for futuro in as_completed(futuros):
+            url = futuros[futuro]
+            try:
+                feed, error = futuro.result()
+            except Exception as e:
+                feed, error = None, f"Excepción en hilo: {e}"
+            resultados[url] = (feed, error)
+    return resultados
 
 def determinar_lista_medios():
     if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
@@ -284,7 +356,7 @@ def evaluar_texto(texto, palabras_clave):
 def analizar_nota_con_ia(titulo, resumen):
     if not GEMINI_API_KEY: return "⚠️ Error: GEMINI_API_KEY no configurada en Render."
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
+
     prompt = (
         f"Eres un analista de comunicación política experto en el estado de Veracruz. "
         f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera estrictamente lo siguiente:\n"
@@ -295,7 +367,7 @@ def analizar_nota_con_ia(titulo, resumen):
         f"Contexto: {resumen}\n\n"
         f"Responde usando formato Markdown limpio. Sé directo, institucional y preciso."
     )
-    
+
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         response = requests.post(url, json=payload, timeout=15)
@@ -317,27 +389,48 @@ def enviar_mensaje_telegram(texto):
         return response.status_code == 200
     except: return False
 
+def formatear_reporte_fallidos(medios_fallidos, max_mostrar=15):
+    """Construye un bloque de texto legible con los medios que fallaron."""
+    if not medios_fallidos:
+        return "Ninguno ✅ (todos los medios de la lista respondieron)"
+    lineas = []
+    for url, error in medios_fallidos[:max_mostrar]:
+        lineas.append(f"• {nombre_corto_medio(url)} — _{error}_")
+    texto = "\n".join(lineas)
+    restantes = len(medios_fallidos) - max_mostrar
+    if restantes > 0:
+        texto += f"\n… y {restantes} medio(s) más."
+    return texto
+
 def ejecutar_busqueda_prioritaria(tema_objetivo):
     medios_activos, _ = determinar_lista_medios()
     palabras_clave = [normalizar_texto(w) for w in tema_objetivo.split() if len(w) >= 3]
-    if not palabras_clave: return 0
+    if not palabras_clave: return 0, [], len(medios_activos)
+
     coincidencias = 0
-    
+    medios_fallidos = []
+    medios_revisados = 0
+
+    resultados_fetch = descargar_feeds_en_paralelo(medios_activos)
+
     for url_rss in medios_activos:
-        feed = obtener_feed_rss(url_rss)
-        if not feed or not hasattr(feed, 'entries'): continue
-        
-        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
+        feed, error = resultados_fetch.get(url_rss, (None, "Sin resultado (no procesado)"))
+        if not feed or not hasattr(feed, 'entries'):
+            medios_fallidos.append((url_rss, error))
+            continue
+
+        medios_revisados += 1
+        nombre_medio = feed.feed.get("title", nombre_corto_medio(url_rss))
         for entrada in feed.entries:
             titulo = entrada.get("title", "")
             resumen = entrada.get("summary", "")
             texto_analisis_norm = normalizar_texto(titulo + " " + resumen)
-            
+
             if all(palabra in texto_analisis_norm for palabra in palabras_clave):
                 link = entrada.get("link", "#")
                 link_corto = acortar_url(link)
                 analisis_ia = analizar_nota_con_ia(titulo, resumen)
-                
+
                 fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
                 if fecha_parsed:
                     dt_utc = datetime(*fecha_parsed[:6])
@@ -345,7 +438,7 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
                     timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
                 else:
                     timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
-                
+
                 mensaje = (
                     f"🔥 *HALLAZGO PRIORITARIO / COMUNICADO*\n"
                     f"━━━━━━━━━━━━━━━━━━━\n"
@@ -362,7 +455,8 @@ def ejecutar_busqueda_prioritaria(tema_objetivo):
                 enviar_mensaje_telegram(mensaje)
                 coincidencias += 1
                 time.sleep(0.5)
-    return coincidencias
+
+    return coincidencias, medios_fallidos, medios_revisados
 
 def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada=None):
     if lista_forzada:
@@ -370,11 +464,13 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
         nombre_lista = "Lista Asignada"
     else:
         medios_activos, nombre_lista = determinar_lista_medios()
-        
+
     historial = cargar_historial()
     noticias_manuales = cargar_noticias_manuales()
     alertas_enviadas = 0
-    
+    medios_revisados = 0
+    medios_fallidos = []
+
     if horas_atras:
         epoch_threshold = calendar.timegm(time.gmtime()) - (horas_atras * 3600)
     else:
@@ -386,40 +482,51 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
             fecha_10pm_veracruz = (ahora_veracruz - timedelta(days=1)).replace(hour=22, minute=0, second=0, microsecond=0)
         epoch_threshold = calendar.timegm((fecha_10pm_veracruz + timedelta(hours=6)).utctimetuple())
 
+    # --- Descarga TODOS los feeds de la lista en paralelo, garantizando 1 intento
+    #     (con reintentos internos) por cada URL, sin saltarse ninguno. ---
+    resultados_fetch = descargar_feeds_en_paralelo(medios_activos)
+
     for url_rss in medios_activos:
-        feed = obtener_feed_rss(url_rss)
-        if not feed or not hasattr(feed, 'entries'): continue
-        
-        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
+        feed, error = resultados_fetch.get(url_rss, (None, "Sin resultado (no procesado)"))
+        if not feed or not hasattr(feed, 'entries') or len(feed.entries) == 0:
+            print(f"⚠️ [FEED VACÍO / FALLIDO] Saltando: {url_rss} — {error}")
+            medios_fallidos.append((url_rss, error))
+            continue
+
+        medios_revisados += 1
+        nombre_medio = feed.feed.get("title", nombre_corto_medio(url_rss))
+
         for entrada in feed.entries:
             link = entrada.get("link")
             if not link or link in historial: continue
-            
+
             titulo = entrada.get("title", "")
             resumen = entrada.get("summary", "")
             titulo_norm = normalizar_texto(titulo)
-            
+
             if any(linea_manual in titulo_norm for linea_manual in noticias_manuales if len(linea_manual) > 8):
                 continue
-            
+
             fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
             timestamp_noticia = None
-            
+
             if fecha_parsed:
                 try:
                     nota_epoch = calendar.timegm(fecha_parsed)
-                    if nota_epoch < epoch_threshold: continue 
+                    if nota_epoch < epoch_threshold:
+                        continue
                     dt_utc = datetime(*fecha_parsed[:6])
                     dt_veracruz = dt_utc - timedelta(hours=6)
                     timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
-                except: pass
-            
+                except:
+                    pass
+
             if not timestamp_noticia:
                 timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
 
             hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETROS)
             if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
-            
+
             if hizo_match:
                 link_corto = acortar_url(link)
                 if usar_ia:
@@ -452,26 +559,52 @@ def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada
                 alertas_enviadas += 1
                 time.sleep(0.4)
             historial.append(link)
-            
+
     guardar_historial(historial)
-    return alertas_enviadas, nombre_lista
+    print(f"✅ Monitoreo finalizado. Medios con éxito: {medios_revisados}/{len(medios_activos)}. Alertas: {alertas_enviadas}. Fallidos: {len(medios_fallidos)}")
+    return alertas_enviadas, nombre_lista, medios_revisados, medios_fallidos
 
 # ==============================================================================
 # 5. PROCESAMIENTO CENTRAL DE COMANDOS
 # ==============================================================================
+def _ejecutar_y_reportar(nombre_reporte, lista_objetivo, usar_ia=False, horas=None):
+    """
+    Helper común para todos los comandos de escaneo por lista: ejecuta el
+    monitoreo, y siempre envía un reporte final con cobertura real
+    (medios revisados / total) y el detalle de los medios que fallaron.
+    """
+    total_medios = len(lista_objetivo)
+    if horas:
+        enviar_mensaje_telegram(f"🔍 _Rastreando {nombre_reporte} — {total_medios} medios (Últimas {horas} horas)..._")
+    else:
+        enviar_mensaje_telegram(f"🔍 _Rastreando {nombre_reporte} — {total_medios} medios (Corte desde 10:00 PM)..._")
+
+    alertas, _, revisados, fallidos = ejecutar_monitoreo_silencioso(
+        usar_ia=usar_ia, horas_atras=horas, lista_forzada=lista_objetivo
+    )
+
+    reporte_fallos = formatear_reporte_fallidos(fallidos)
+    enviar_mensaje_telegram(
+        f"✅ *Escaneo {nombre_reporte} Terminado.*\n"
+        f"✨ Alertas enviadas: `{alertas}`\n"
+        f"📊 Cobertura: `{revisados}/{total_medios}` medios revisados con éxito\n"
+        f"⚠️ *Medios que fallaron:*\n{reporte_fallos}"
+    )
+
 def procesar_mensaje_telegram(mensaje):
     global MODO_LISTA
     usuario_id = mensaje.get("from", {}).get("id")
     texto_comando = mensaje.get("text", "").strip()
-    
+
     if usuario_id != CHAT_ID: return
-    
+
     if texto_comando == "/start" or texto_comando == "/ayuda":
         menu = (
             "📱 *Panel de Control RSS (WEBHOOK BLINDADO)*\n\n"
             "📰 *MEDIOS WEB (RSS):*\n"
             "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular.\n"
             "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
+            "👉 `/lista1` o `/lista1 X` : Forzar rastreo en Lista 1.\n"
             "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
             "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3.\n"
             "👉 `/ivan` o `/ivan X` : Rastreo estándar Lista Iván.\n"
@@ -480,10 +613,12 @@ def procesar_mensaje_telegram(mensaje):
             "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
             "⚙️ *SISTEMA:*\n"
             "👉 `/modo` : Ver o forzar listas.\n"
-            "👉 `/limpiar` : Vaciar historial de enlaces web."
+            "👉 `/limpiar` : Vaciar historial de enlaces web.\n\n"
+            "ℹ️ Cada escaneo ahora reporta cuántos medios de la lista se\n"
+            "revisaron con éxito y cuáles fallaron (y por qué)."
         )
         enviar_mensaje_telegram(menu)
-        
+
     elif texto_comando.startswith("/ayer"):
         contenido = re.sub(r'^/ayer[\s\n]*', '', texto_comando).strip()
         if contenido:
@@ -497,87 +632,64 @@ def procesar_mensaje_telegram(mensaje):
         else:
             guardar_noticias_manuales([])
             enviar_mensaje_telegram("🗑️ Filtro de notas manuales vaciado.")
-            
+
     elif texto_comando.startswith("/buscar "):
         partes = texto_comando.split(" ", 1)
         if len(partes) > 1:
             tema_a_rastrear = partes[1].strip()
             enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
-            encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
-            enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
+            encontrados, fallidos, revisados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
+            reporte_fallos = formatear_reporte_fallidos(fallidos)
+            enviar_mensaje_telegram(
+                f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`\n"
+                f"📊 Cobertura: `{revisados}` medios revisados con éxito\n"
+                f"⚠️ *Medios que fallaron:*\n{reporte_fallos}"
+            )
+
+    elif texto_comando.startswith("/lista1"):
+        arg = texto_comando.replace("/lista1", "").strip()
+        num = re.findall(r'\d+', arg)
+        horas = int(num[0]) if num else None
+        _ejecutar_y_reportar("Lista 1", LISTA_1, usar_ia=False, horas=horas)
 
     elif texto_comando.startswith("/lista5"):
         arg = texto_comando.replace("/lista5", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 5 (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_5)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista 5 (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_5)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista 5 Terminado.*\n✨ Alertas enviadas: `{total}`")
+        _ejecutar_y_reportar("Lista 5", LISTA_5, usar_ia=False, horas=horas)
 
     elif texto_comando.startswith("/ivan"):
         arg = texto_comando.replace("/ivan", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Iván (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_IVAN)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista Iván (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_IVAN)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista Iván Terminado.*\n✨ Alertas enviadas: `{total}`")
-            
+        _ejecutar_y_reportar("Lista Iván", LISTA_IVAN, usar_ia=False, horas=horas)
+
     elif texto_comando.startswith("/escanearb"):
         arg = texto_comando.replace("/escanearb", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 3 (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_3)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista 3 (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_3)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista 3 Terminado.*\n✨ Alertas enviadas: `{total}`")
-            
+        _ejecutar_y_reportar("Lista 3", LISTA_3, usar_ia=False, horas=horas)
+
     elif texto_comando.startswith("/escaneard"):
         arg = texto_comando.replace("/escaneard", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Fin de Semana (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_FIN_DE_SEMANA)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista Fin de Semana (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_FIN_DE_SEMANA)
-        enviar_mensaje_telegram(f"✅ *Escaneo Fin de Semana Terminado.*\n✨ Alertas enviadas: `{total}`")
-        
+        _ejecutar_y_reportar("Lista Fin de Semana", LISTA_FIN_DE_SEMANA, usar_ia=False, horas=horas)
+
     elif texto_comando.startswith("/escanearIA"):
         arg = texto_comando.replace("/escanearIA", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas con IA)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True, horas_atras=horas)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM con IA)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True)
-        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas procesadas por IA Pro: `{total}`")
-        
+        medios_activos, _ = determinar_lista_medios()
+        _ejecutar_y_reportar("Portales Regulares (IA)", medios_activos, usar_ia=True, horas=horas)
+
     elif texto_comando.startswith("/escanear"):
         arg = texto_comando.replace("/escanear", "").strip()
         num = re.findall(r'\d+', arg)
         horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False)
-        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
-        
+        medios_activos, _ = determinar_lista_medios()
+        _ejecutar_y_reportar("Portales Regulares", medios_activos, usar_ia=False, horas=horas)
+
     elif texto_comando == "/modo":
         msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3` | `/set_ivan` | `/set_lista5`"
         enviar_mensaje_telegram(msg_modo)
@@ -609,7 +721,7 @@ def procesar_mensaje_telegram(mensaje):
 web_app = Flask('')
 
 @web_app.route('/')
-def home(): 
+def home():
     return "Servicio RSS Operando bajo Webhook Inmortal en Render"
 
 @web_app.route('/webhook', methods=['POST'])
