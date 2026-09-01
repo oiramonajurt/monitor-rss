@@ -6,74 +6,82 @@ import hashlib
 import requests
 import feedparser
 import threading
+import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
 from flask import Flask, request
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, Index
-from sqlalchemy.orm import declarative_base, sessionmaker
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==============================================================================
-# 1. CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# 1. CONFIGURACIÓN E IDENTIFICACIÓN (Variables existentes de Render)
 # ==============================================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = int(os.environ.get("CHAT_ID", "1468116225"))
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 PORT = int(os.environ.get("PORT", 8080))
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://monitor-rss-service.onrender.com")
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-elif not DATABASE_URL:
-    DATABASE_URL = "sqlite:///inteligencia_local.db"
+DB_FILE = "inteligencia_veracruz.db"
 
 HEADERS_HTTP = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 }
 
 # ==============================================================================
-# 2. BASE DE DATOS (PostgreSQL / SQLite fallback)
+# 2. BASE DE DATOS LOCAL AUTOMÁTICA (SQLite Autónomo)
 # ==============================================================================
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS items_monitoreo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hash_id TEXT UNIQUE,
+            fuente TEXT,
+            autor TEXT,
+            titulo TEXT,
+            url TEXT,
+            fecha_publicacion TEXT,
+            es_nahle INTEGER,
+            es_crisis INTEGER,
+            es_lluvias INTEGER,
+            municipio TEXT,
+            dependencia TEXT,
+            sentimiento TEXT,
+            riesgo_politico TEXT,
+            riesgo_mediatico TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-def generar_hash(texto: str) -> str:
-    return hashlib.sha256(texto.encode('utf-8')).hexdigest()
+def item_ya_procesado(hash_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT id FROM items_monitoreo WHERE hash_id = ?', (hash_id,))
+    res = c.fetchone()
+    conn.close()
+    return res is not None
 
-class ItemMonitoreo(Base):
-    __tablename__ = "items_monitoreo"
-
-    id = Column(Integer, primary_key=True, index=True)
-    hash_id = Column(String(64), unique=True, index=True, nullable=False)
-    tipo_fuente = Column(String(20), index=True)
-    fuente_nombre = Column(String(150), index=True)
-    autor = Column(String(150), nullable=True)
-    tipo_actor = Column(String(50), default="Medio", index=True)
-    titulo = Column(Text, nullable=True)
-    contenido = Column(Text, nullable=False)
-    url = Column(Text, nullable=False)
-    fecha_publicacion = Column(DateTime, default=datetime.utcnow, index=True)
-    
-    es_alerta_gobernadora = Column(Boolean, default=False, index=True)
-    es_crisis = Column(Boolean, default=False, index=True)
-    es_lluvias_pc = Column(Boolean, default=False, index=True)
-    
-    sentimiento = Column(String(20), nullable=True)
-    riesgo_politico = Column(String(20), nullable=True)
-    riesgo_mediatico = Column(String(20), nullable=True)
-    municipio_detectado = Column(String(100), nullable=True)
-    dependencia_detectada = Column(String(100), nullable=True)
-    resumen_ejecutivo = Column(Text, nullable=True)
-    impacto_potencial = Column(Text, nullable=True)
-    recomendacion_estrategica = Column(Text, nullable=True)
-    alerta_enviada = Column(Boolean, default=False)
-
-Base.metadata.create_all(bind=engine)
+def guardar_item(data):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR IGNORE INTO items_monitoreo 
+            (hash_id, fuente, autor, titulo, url, fecha_publicacion, es_nahle, es_crisis, es_lluvias, municipio, dependencia, sentimiento, riesgo_politico, riesgo_mediatico)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data.get("hash_id"), data.get("fuente"), data.get("autor"), data.get("titulo"), data.get("url"),
+            data.get("fecha_publicacion"), data.get("es_nahle", 0), data.get("es_crisis", 0), data.get("es_lluvias", 0),
+            data.get("municipio"), data.get("dependencia"), data.get("sentimiento"), data.get("riesgo_politico"), data.get("riesgo_mediatico")
+        ))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 # ==============================================================================
-# 3. LISTAS DE FUENTES Y REGLAS DE NEGOCIO
+# 3. FUENTES Y REGLAS ESTRATÉGICAS DE VERACRUZ
 # ==============================================================================
 RSS_FEEDS = [
     "https://coatzadiario.com/feed/", "https://coatzahoy.com/feed/", "https://www.elpinero.mx/feed/",
@@ -137,14 +145,6 @@ DEPENDENCIAS = [
     "DIF Estatal", "CGCS", "CGEC", "Contraloría General", "Fiscalía General", "FGE"
 ]
 
-ACTORES_MAP = {
-    "miguel angel yunes": "Opositor", "pepe yunes": "Opositor", "hector yunes": "Opositor",
-    "julen rementeria": "Opositor", "indira rosales": "Opositor", "patricia lobeira": "Alcalde / Opositor",
-    "fernando yunes": "Opositor", "sergio cadena": "Opositor", "manuel huerta": "Senador / Morena",
-    "billie parker": "Periodista", "mussio cardenas": "Columnista", "luis velazquez": "Columnista",
-    "raymundo jimenez": "Columnista", "claudia guerrero": "Periodista"
-}
-
 KEYWORDS_CRISIS_NAHLE = [
     "corrupcion", "desvio", "denuncia", "escandalo", "crimen", "inseguridad",
     "protesta", "manifestacion", "auditoria", "desabasto", "violencia", "bloqueo"
@@ -152,11 +152,17 @@ KEYWORDS_CRISIS_NAHLE = [
 
 KEYWORDS_LLUVIAS = [
     "inundacion", "inundaciones", "desbordamiento", "deslave", "deslaves",
-    "derrumbe", "derrumbes", "evacuacion", "refugio temporal", "rio desbordado"
+    "derrumbe", "derrumbes", "evacuacion", "refugio temporal", "albergue", "rio desbordado"
+]
+
+KEYWORDS_CRISIS = [
+    "homicidio", "secuestro", "desaparicion", "narcobloqueo", "fosa", "extorsion",
+    "cobro de piso", "balacera", "ejecutado", "orfis", "juicio politico", "desfalco",
+    "toma de instalaciones", "socavon", "puente colapsado"
 ]
 
 # ==============================================================================
-# 4. FUNCIONES DE PROCESAMIENTO Y ANÁLISIS
+# 4. FUNCIONES DE PROCESAMIENTO E INTELIGENCIA
 # ==============================================================================
 def normalizar(texto: str) -> str:
     if not texto: return ""
@@ -166,11 +172,11 @@ def evaluar_reglas(titulo: str, contenido: str):
     texto_norm = normalizar(f"{titulo} {contenido}")
     
     es_nahle = "nahle" in texto_norm or "rocio nahle" in texto_norm
-    tiene_crisis_nahle = any(kw in texto_norm for kw in KEYWORDS_CRISIS_NAHLE)
-    es_alerta_nahle = es_nahle and tiene_crisis_nahle
+    crisis_nahle = any(kw in texto_norm for kw in KEYWORDS_CRISIS_NAHLE)
+    es_alerta_nahle = es_nahle and crisis_nahle
     
     es_lluvias = any(kw in texto_norm for kw in KEYWORDS_LLUVIAS)
-    es_crisis = tiene_crisis_nahle or es_lluvias or any(w in texto_norm for w in ["homicidio", "secuestro", "bloqueo vial", "fosa"])
+    es_crisis = es_alerta_nahle or es_lluvias or any(kw in texto_norm for kw in KEYWORDS_CRISIS)
     
     muni = "Estatal"
     for m in MUNICIPIOS:
@@ -185,33 +191,37 @@ def evaluar_reglas(titulo: str, contenido: str):
             break
 
     return {
-        "es_alerta_nahle": es_alerta_nahle,
-        "es_lluvias": es_lluvias,
-        "es_crisis": es_crisis,
+        "es_nahle": 1 if es_alerta_nahle else 0,
+        "es_lluvias": 1 if es_lluvias else 0,
+        "es_crisis": 1 if es_crisis else 0,
         "municipio": muni,
         "dependencia": dep
     }
 
-def analizar_con_gemini(titulo: str, contenido: str, fuente: str):
+def analizar_con_gemini_estructurado(titulo: str, contenido: str, fuente: str):
     if not GEMINI_API_KEY: return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
-    Actúa como Analista Senior de Inteligencia Política y Manejo de Crisis del Gobierno de Veracruz.
+    Actúa como Analista de Inteligencia Política y Riesgos del Estado de Veracruz.
     Analiza esta nota y devuelve EXCLUSIVAMENTE un JSON con:
     {{
       "tipo_actor": "Medio | Periodista | Columnista | Opositor | Funcionario | Alcalde | Ciudadano",
-      "sentimiento": "Positivo | Neutral | Negativo | Muy negativo",
+      "sentimiento": "Muy positivo | Positivo | Neutral | Negativo | Muy negativo",
       "riesgo_politico": "Bajo | Medio | Alto | Crítico",
       "riesgo_mediatico": "Bajo | Medio | Alto | Crítico",
-      "tema_principal": "Tema en 6 palabras",
+      "tema_principal": "Tema central en máximo 6 palabras",
       "municipio": "Municipio involucrado o 'Estatal'",
       "dependencia": "Dependencia involucrada o 'Ninguna'",
-      "resumen_ejecutivo": ["Viñeta 1 corta", "Viñeta 2 corta", "Viñeta 3 corta"],
-      "impacto_potencial": "Riesgo en una frase",
-      "recomendacion_estrategica": "Acción recomendada"
+      "resumen_ejecutivo": [
+        "Viñeta 1 concisa",
+        "Viñeta 2 concisa",
+        "Viñeta 3 concisa"
+      ],
+      "impacto_potencial": "Impacto político o mediático directo",
+      "recomendacion_estrategica": "Acción institucional sugerida"
     }}
-    Nota: {fuente} - {titulo}. {contenido}
+    Nota: Fuente: {fuente} | Título: {titulo} | Resumen: {contenido}
     """
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -226,12 +236,12 @@ def analizar_con_gemini(titulo: str, contenido: str, fuente: str):
     return None
 
 # ==============================================================================
-# 5. MENSAJERÍA TELEGRAM
+# 5. SALIDA TELEGRAM ESTRATÉGICA
 # ==============================================================================
 def enviar_alerta_telegram(item: dict, ia: dict = None):
     if not TELEGRAM_TOKEN: return False
 
-    if item.get("es_alerta_nahle"):
+    if item.get("es_nahle"):
         header = "🔥 *ALERTA CRÍTICA: GOBERNADORA ROCÍO NAHLE*"
     elif item.get("tipo_fuente") == "CAPUFE":
         header = "🛣️ *ALERTA VIAL CAPUFE: VERACRUZ*"
@@ -240,7 +250,7 @@ def enviar_alerta_telegram(item: dict, ia: dict = None):
     else:
         header = "🚨 *ALERTA ESTRATÉGICA*"
 
-    fuente = item.get("fuente_nombre", "Medio")
+    fuente = item.get("fuente", "Medio")
     autor = item.get("autor", "Redacción")
     url = item.get("url", "#")
 
@@ -254,19 +264,19 @@ def enviar_alerta_telegram(item: dict, ia: dict = None):
         r_med = ia.get("riesgo_mediatico", "Medio")
         vines = ia.get("resumen_ejecutivo", [])
         resumen_txt = "\n".join([f"• {v}" for v in vines]) if isinstance(vines, list) else f"• {vines}"
-        impacto = ia.get("impacto_potencial", "Seguimiento preventivo")
-        rec = ia.get("recomendacion_estrategica", "Mantener monitoreo")
+        impacto = ia.get("impacto_potencial", "Monitoreo preventivo")
+        rec = ia.get("recomendacion_estrategica", "Mantener seguimiento")
     else:
         actor = "Medio"
         tema = item.get("titulo", "Novedad informativa")
         muni = item.get("municipio", "Estatal")
         dep = item.get("dependencia", "Gobierno")
-        sent = "Neutral"
+        sent = "Pendiente de Análisis"
         r_pol = "Medio"
         r_med = "Medio"
-        resumen_txt = f"• {item.get('contenido', '')[:200]}..."
-        impacto = "En análisis"
-        rec = "Revisar publicación"
+        resumen_txt = f"• {item.get('contenido', '')[:220]}..."
+        impacto = "En evaluación"
+        rec = "Revisar alcance de la publicación"
 
     msg = (
         f"{header}\n"
@@ -276,7 +286,7 @@ def enviar_alerta_telegram(item: dict, ia: dict = None):
         f"👤 *Tipo de actor:* `{actor}`\n"
         f"📌 *Tema:* {tema}\n"
         f"📍 *Municipio:* {muni}\n"
-        f"🏢 *Dependencia:* {dep}\n"
+        f"🏢 *Dependencia involucrada:* {dep}\n"
         f"📊 *Postura:* {sent}\n"
         f"⚠️ *Riesgo Político:* `{r_pol}`\n"
         f"📢 *Riesgo Mediático:* `{r_med}`\n"
@@ -300,109 +310,97 @@ def enviar_alerta_telegram(item: dict, ia: dict = None):
         return False
 
 # ==============================================================================
-# 6. PIPELINE PRINCIPAL DE INGESTA
+# 6. PIPELINE DE RECOLECCIÓN (RSS + CAPUFE)
 # ==============================================================================
-def ejecutar_ciclo():
-    db = SessionLocal()
+def ejecutar_monitoreo():
     items = []
-    
-    # 1. Scraping CAPUFE
+
+    # 1. Monitoreo CAPUFE Carreteras
     try:
         capufe_feed = feedparser.parse("https://nitter.privacydev.net/CAPUFE/rss")
-        for e in capufe_feed.entries[:10]:
-            sum_txt = e.get("summary", "")
-            if any(t in sum_txt.lower() for t in ["veracruz", "cordoba", "orizaba", "maltrata", "coatzacoalcos", "isla", "tinaja"]):
+        for e in capufe_feed.entries[:8]:
+            txt = e.get("summary", "")
+            if any(t in txt.lower() for t in ["veracruz", "cordoba", "orizaba", "maltrata", "coatzacoalcos", "isla", "tinaja", "minatitlan"]):
+                link = e.get("link", "#").replace("nitter.privacydev.net", "x.com")
                 items.append({
-                    "hash_id": generar_hash(f"CAPUFE_{e.get('link')}"),
+                    "hash_id": hashlib.sha256(f"CAPUFE_{link}".encode('utf-8')).hexdigest(),
                     "tipo_fuente": "CAPUFE",
-                    "fuente_nombre": "CAPUFE Oficial",
+                    "fuente": "CAPUFE Oficial (@CAPUFE)",
                     "autor": "@CAPUFE",
-                    "titulo": "Aviso Carretero CAPUFE",
-                    "contenido": sum_txt,
-                    "url": e.get("link", "#").replace("nitter.privacydev.net", "x.com"),
-                    "fecha_publicacion": datetime.utcnow()
+                    "titulo": "Reporte Vial Carretero CAPUFE",
+                    "contenido": txt,
+                    "url": link,
+                    "fecha_publicacion": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
                 })
     except Exception:
         pass
 
-    # 2. Ingesta RSS
-    limite = datetime.utcnow() - timedelta(hours=3)
+    # 2. Medios RSS Estatales
     for url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
             nombre_medio = feed.feed.get("title", url.split("//")[-1].split("/")[0])
-            for e in feed.entries[:8]:
+            for e in feed.entries[:6]:
                 link = e.get("link", "")
                 if not link: continue
-                
                 titulo = e.get("title", "").strip()
                 resumen = e.get("summary", "").strip()
-                h_id = generar_hash(f"{link}_{titulo}")
-                
+                h_id = hashlib.sha256(f"{link}_{titulo}".encode('utf-8')).hexdigest()
+
                 items.append({
                     "hash_id": h_id,
                     "tipo_fuente": "RSS",
-                    "fuente_nombre": nombre_medio,
+                    "fuente": nombre_medio,
                     "autor": e.get("author", nombre_medio),
                     "titulo": titulo,
                     "contenido": f"{titulo}. {resumen}",
                     "url": link,
-                    "fecha_publicacion": datetime.utcnow()
+                    "fecha_publicacion": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
                 })
         except Exception:
             continue
 
-    # 3. Procesamiento y Deduplicación en Base de Datos
+    # 3. Filtrado, Análisis IA y Persistencia SQLite
     for data in items:
-        if db.query(ItemMonitoreo).filter_by(hash_id=data["hash_id"]).first():
+        if item_ya_procesado(data["hash_id"]):
             continue
 
         reglas = evaluar_reglas(data.get("titulo", ""), data.get("contenido", ""))
-        debe_ia = reglas["es_alerta_nahle"] or reglas["es_crisis"] or reglas["es_lluvias"] or data["tipo_fuente"] == "CAPUFE"
-        
+        debe_ia = reglas["es_nahle"] or reglas["es_crisis"] or reglas["es_lluvias"] or data["tipo_fuente"] == "CAPUFE"
+
         ia = None
         if debe_ia:
-            ia = analizar_con_gemini(data.get("titulo", ""), data.get("contenido", ""), data["fuente_nombre"])
+            ia = analizar_con_gemini_estructurado(data.get("titulo", ""), data.get("contenido", ""), data["fuente"])
             enviar_alerta_telegram(data | reglas, ia)
-            time.sleep(0.5)
+            time.sleep(0.4)
 
-        nuevo = ItemMonitoreo(
-            hash_id=data["hash_id"],
-            tipo_fuente=data["tipo_fuente"],
-            fuente_nombre=data["fuente_nombre"],
-            autor=data.get("autor"),
-            titulo=data.get("titulo"),
-            contenido=data.get("contenido"),
-            url=data["url"],
-            fecha_publicacion=data.get("fecha_publicacion"),
-            es_alerta_gobernadora=reglas["es_alerta_nahle"],
-            es_crisis=reglas["es_crisis"],
-            es_lluvias_pc=reglas["es_lluvias"],
-            municipio_detectado=ia.get("municipio") if ia else reglas["municipio"],
-            dependencia_detectada=ia.get("dependencia") if ia else reglas["dependencia"],
-            sentimiento=ia.get("sentimiento") if ia else None,
-            riesgo_politico=ia.get("riesgo_politico") if ia else None,
-            riesgo_mediatico=ia.get("riesgo_mediatico") if ia else None,
-            alerta_enviada=debe_ia
-        )
-        db.add(nuevo)
-
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
+        registro = {
+            "hash_id": data["hash_id"],
+            "fuente": data["fuente"],
+            "autor": data.get("autor"),
+            "titulo": data.get("titulo"),
+            "url": data["url"],
+            "fecha_publicacion": data["fecha_publicacion"],
+            "es_nahle": reglas["es_nahle"],
+            "es_crisis": reglas["es_crisis"],
+            "es_lluvias": reglas["es_lluvias"],
+            "municipio": ia.get("municipio") if ia else reglas["municipio"],
+            "dependencia": ia.get("dependencia") if ia else reglas["dependencia"],
+            "sentimiento": ia.get("sentimiento") if ia else None,
+            "riesgo_politico": ia.get("riesgo_politico") if ia else None,
+            "riesgo_mediatico": ia.get("riesgo_mediatico") if ia else None
+        }
+        guardar_item(registro)
 
 # ==============================================================================
-# 7. SERVIDOR FLASK, SCHEDULER Y WEBHOOK
+# 7. SERVIDOR FLASK Y WEBHOOK
 # ==============================================================================
 app = Flask(__name__)
-scheduler = BackgroundScheduler(daemon=True)
+init_db()
 
 @app.route('/')
 def home():
-    return "Sistema de Inteligencia de Veracruz v2.0 - Activo"
+    return "Sistema de Inteligencia de Veracruz Operativo (Single-File SQLite)"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -411,10 +409,10 @@ def webhook():
         msg = datos["message"]
         if msg.get("from", {}).get("id") == CHAT_ID:
             txt = msg.get("text", "").strip()
-            if txt == "/escanear":
+            if txt in ["/escanear", "/scan"]:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                              json={"chat_id": CHAT_ID, "text": "🚀 _Iniciando rastreo integral..._", "parse_mode": "Markdown"})
-                threading.Thread(target=ejecutar_ciclo, daemon=True).start()
+                              json={"chat_id": CHAT_ID, "text": "🚀 _Iniciando escaneo integral estratégico..._", "parse_mode": "Markdown"})
+                threading.Thread(target=ejecutar_monitoreo, daemon=True).start()
     return "OK", 200
 
 def registrar_webhook():
@@ -425,8 +423,15 @@ def registrar_webhook():
     except Exception:
         pass
 
+def bucle_automatico():
+    while True:
+        try:
+            ejecutar_monitoreo()
+        except Exception:
+            pass
+        time.sleep(300) # Escaneo automático cada 5 minutos
+
 if __name__ == "__main__":
-    scheduler.add_job(ejecutar_ciclo, 'interval', minutes=5, id='monitor_veracruz', replace_existing=True)
-    scheduler.start()
+    threading.Thread(target=bucle_automatico, daemon=True).start()
     threading.Thread(target=registrar_webhook, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
