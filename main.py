@@ -1,187 +1,96 @@
-import feedparser
-import requests
-import json
 import os
 import re
+import json
 import time
-import calendar
+import hashlib
+import requests
+import feedparser
+import threading
 import unicodedata
 from datetime import datetime, timedelta
 from flask import Flask, request
-import threading
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, Index
+from sqlalchemy.orm import declarative_base, sessionmaker
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==============================================================================
-# 1. CONFIGURACIÓN E IDENTIFICACIÓN (Variables de Entorno de Render)
+# 1. CONFIGURACIÓN Y VARIABLES DE ENTORNO
 # ==============================================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = int(os.environ.get("CHAT_ID", "1468116225"))
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://monitor-rss-service.onrender.com")
 
-MODO_LISTA = "AUTO" 
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+elif not DATABASE_URL:
+    DATABASE_URL = "sqlite:///inteligencia_local.db"
 
 HEADERS_HTTP = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 }
 
 # ==============================================================================
-# 2. DEFINICIÓN DE LISTAS DE MEDIOS RSS
+# 2. BASE DE DATOS (PostgreSQL / SQLite fallback)
 # ==============================================================================
-LISTA_1 = [
-    "https://coatzadiario.com/feed/",
-    "https://coatzahoy.com/feed/",
-    "https://www.elpinero.mx/feed/",
-    "https://elementosmx.com/feed/",
-    "https://www.enprivadoveracruz.com.mx/feed/",
-    "https://www.firmas.mx/feed/",
-    "https://horacero.mx/feed/",
-    "https://jornadaveracruz.com.mx/feed/",
-    "https://www.politicaaldia.com/feed/",
-    "https://tvsureste.com/feed/",
-    "https://alornoticias.com.mx/feed/",
-    "https://www.avcnoticias.com.mx/rss/",
-    "https://blogexpediente.com/feed/",
-    "https://cambiodigitalnoticias.com/feed/",
-    "https://cronicadelpoder.com/feed/",
-    "https://www.diariodexalapa.com.mx/rss/",
-    "https://diariolostuxtlas.com/feed/",
-    "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/",
-    "https://www.eluniversal.com.mx/arc/outboundfeeds/rss/",
-    "https://graficoaldia.mx/feed/",
-    "https://elheraldodemartinez.com.mx/feed/",
-    "https://lasillarota.com/veracruz/feed/",
-    "https://latinus.us/feed/",
-    "https://www.masnoticias.mx/feed/",
-    "https://www.nmas.com.mx/rss/",
-    "https://palabrasclaras.mx/feed/",
-    "https://sociedadtrespuntocero.com/feed/",
-    "https://xeu.mx/feed/"
-]
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-LISTA_2 = [
-    "https://www.jornada.com.mx/rss/edicion.xml",
-    "https://www.excelsior.com.mx/rss.xml"
-]
+def generar_hash(texto: str) -> str:
+    return hashlib.sha256(texto.encode('utf-8')).hexdigest()
 
-LISTA_FIN_DE_SEMANA = [
-    "https://golpepolitico.com/feed/",
-    "https://imagendelgolfo.mx/feed/",
-    "https://www.elbuentono.com.mx/feed/",
-    "https://veracruz.quadratin.com.mx/feed/",
-    "https://www.alcalorpolitico.com/rss/",
-    "https://www.diariodexalapa.com.mx/rss/",
-    "https://horacero.mx/feed/",
-    "https://diariodelistmo.com/feed/",
-    "https://ventanaver.mx/feed/",
-    "https://referentemx.com/feed/",
-    "https://vanguardiaveracruz.com/feed/",
-    "https://noreste.net/feed/",
-    "https://imagendeveracruz.mx/feed/",
-    "https://www.olivanoticias.com/feed/",
-    "https://www.masnoticias.mx/feed/",
-    "https://cambiodigitalnoticias.com/feed/"
-]
+class ItemMonitoreo(Base):
+    __tablename__ = "items_monitoreo"
 
-LISTA_3 = [
-    "https://www.masnoticias.mx/feed/",
-    "https://xeu.mx/feed/",
-    "https://horacero.mx/feed/",
-    "https://jornadaveracruz.com.mx/feed/",
-    "https://elementosmx.com/feed/",
-    "https://tvsureste.com/feed/",
-    "https://www.politicaaldia.com/feed/",
-    "https://vanguardiaveracruz.com/feed/",
-    "https://www.firmas.mx/feed/",
-    "https://cambiodigitalnoticias.com/feed/",
-    "https://www.diariodexalapa.com.mx/rss/",
-    "https://x.gd/EDfoM",
-    "https://cronicadelpoder.com/feed/",
-    "https://siguenzacomunica.com/feed/",
-    "https://www.cronicaveracruz.com/feed/",
-    "https://noticiaslafuente.com.mx/feed/",
-    "https://alornoticias.com.mx/feed/",
-    "https://coatzahoy.com/feed/",
-    "https://olmecamultimedios.com.mx/feed/",
-    "https://graficoaldia.mx/feed/",
-    "https://diariolostuxtlas.com/feed/",
-    "https://diariodelistmo.com/feed/",
-    "https://www.elbuentono.com.mx/feed/",
-    "https://versiones.com.mx/feed/",
-    "https://formato7.com/feed/",
-    "https://lasillarota.com/veracruz/feed/",
-    "https://presencianoticias.com/feed/",
-    "https://laizquierdanoticias.com.mx/feed/"
-]
+    id = Column(Integer, primary_key=True, index=True)
+    hash_id = Column(String(64), unique=True, index=True, nullable=False)
+    tipo_fuente = Column(String(20), index=True)
+    fuente_nombre = Column(String(150), index=True)
+    autor = Column(String(150), nullable=True)
+    tipo_actor = Column(String(50), default="Medio", index=True)
+    titulo = Column(Text, nullable=True)
+    contenido = Column(Text, nullable=False)
+    url = Column(Text, nullable=False)
+    fecha_publicacion = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    es_alerta_gobernadora = Column(Boolean, default=False, index=True)
+    es_crisis = Column(Boolean, default=False, index=True)
+    es_lluvias_pc = Column(Boolean, default=False, index=True)
+    
+    sentimiento = Column(String(20), nullable=True)
+    riesgo_politico = Column(String(20), nullable=True)
+    riesgo_mediatico = Column(String(20), nullable=True)
+    municipio_detectado = Column(String(100), nullable=True)
+    dependencia_detectada = Column(String(100), nullable=True)
+    resumen_ejecutivo = Column(Text, nullable=True)
+    impacto_potencial = Column(Text, nullable=True)
+    recomendacion_estrategica = Column(Text, nullable=True)
+    alerta_enviada = Column(Boolean, default=False)
 
-LISTA_IVAN = [
-    "https://vanguardiaveracruz.com/feed/",
-    "https://siguenzacomunica.com/feed/",
-    "https://www.cronicaveracruz.com/feed/",
-    "https://razondeveracruz.com.mx/feed/",
-    "https://www.enlacedelgolfo.com/feed/",
-    "https://lodeldia.com/feed/",
-    "https://sucesosveracruz.com.mx/feed/",
-    "https://elmonoinformativo.com.mx/feed/",
-    "https://diariodelistmo.com/feed/",
-    "https://www.elbuentono.com.mx/feed/",
-    "https://versiones.com.mx/feed/",
-    "https://formato7.com/feed/",
-    "https://lasillarota.com/veracruz/feed/",
-    "https://www.presencia.mx/feed/",
-    "https://revistafundamentos.com.mx/feed/",
-    "https://sociedadtrespuntocero.com/feed/",
-    "https://acropolismultimedios.mx/feed/",
-    "https://forotuxpan.com/feed/",
-    "https://blogexpediente.com/feed/",
-    "https://liberal.com.mx/feed/",
-    "https://elheraldodemartinez.com.mx/feed/",
-    "https://heraldodemexico.com.mx/feed/",
-    "https://www.proceso.com.mx/feed/",
-    "https://www.radioformula.com.mx/feed/",
-    "https://expansion.mx/feed/",
-    "https://www.sdpnoticias.com/feed/"
-]
-
-LISTA_5 = [
-    "https://billieparkernoticias.com/feed/",
-    "https://imagendelgolfo.mx/feed/",
-    "https://noreste.net/feed/",
-    "https://www.noticiasperfil.com/feed/",
-    "https://mxnoticiero.com/feed/",
-    "https://ventanaver.mx/feed/",
-    "https://www.loseditores.com/feed/",
-    "https://municipiosur.com/feed/",
-    "https://www.alcalorpolitico.com/rss/",
-    "https://www.olivanoticias.com/feed/",
-    "https://encontacto.com.mx/feed/",
-    "https://cronicadexalapa.com.mx/feed/",
-    "https://periodicoveraz.com/feed/",
-    "https://libertadbajopalabra.com/feed/",
-    "https://graficoaldia.mx/feed/",
-    "https://plumaslibres.com.mx/feed/",
-    "https://elportal.mx/feed/",
-    "https://www.elchiltepin.com/feed/",
-    "https://coatzadiario.com/feed/",
-    "https://www.reforma.com/rss/portada.xml",
-    "https://www.infobae.com/feeds/rss/mexico/",
-    "https://www.elimparcial.com/rss/feed.html",
-    "https://lopezdoriga.com/feed/",
-    "https://contralinea.com.mx/feed/"
-]
+Base.metadata.create_all(bind=engine)
 
 # ==============================================================================
-# 3. PARÁMETROS DE FILTRADO GEOGRÁFICO Y POLÍTICO
+# 3. LISTAS DE FUENTES Y REGLAS DE NEGOCIO
 # ==============================================================================
-PARAMETROS = [
-    "Rocío Nahle", "Rocio Nahle", "Nahle", "Mañanera", "DIF Estatal", "DIF Veracruz",
-    "CGEC", "Contraloría General del Estado", "CGCS", "Coordinación General Comunicación Social",
-    "SEGOB", "Secretaría de Gobierno", "SSP", "Secretaría de Seguridad Pública",
-    "SEV", "Secretaría de Educación de Veracruz", "SS", "Secretaría de Salud",
-    "SEFIPLAN", "Secretaría de Finanzas y Planeación", "SEDECOP", "Secretaría de Desarrollo Económico y Portuario",
-    "SEDESOL", "Secretaría de Desarrollo Social", "SIOP", "Secretaría de Infraestructura y Obras Públicas",
-    "STPSP", "Secretaría de Trabajo, Previsión Social y Productivity", "SECTUR", "Secretaría de Turismo",
-    "SECVER", "Secretaría de Cultura de Veracruz", "SEDEMA", "Secretaría de Medio Ambiente",
-    "SEDARPA", "Secretaría de Desarrollo Agropecuario, Rural, Pesca y Alimentación", "SPC", "Secretaría de Protección Civil",
-    "Zona Norte", "Zona Centro", "Zona Sur", "Zona Altas Montañas", "Zona Totonacapan",
+RSS_FEEDS = [
+    "https://coatzadiario.com/feed/", "https://coatzahoy.com/feed/", "https://www.elpinero.mx/feed/",
+    "https://elementosmx.com/feed/", "https://www.enprivadoveracruz.com.mx/feed/", "https://www.firmas.mx/feed/",
+    "https://horacero.mx/feed/", "https://jornadaveracruz.com.mx/feed/", "https://www.politicaaldia.com/feed/",
+    "https://tvsureste.com/feed/", "https://alornoticias.com.mx/feed/", "https://www.avcnoticias.com.mx/rss/",
+    "https://blogexpediente.com/feed/", "https://cambiodigitalnoticias.com/feed/", "https://cronicadelpoder.com/feed/",
+    "https://www.diariodexalapa.com.mx/rss/", "https://diariolostuxtlas.com/feed/", "https://graficoaldia.mx/feed/",
+    "https://elheraldodemartinez.com.mx/feed/", "https://lasillarota.com/veracruz/feed/", "https://latinus.us/feed/",
+    "https://www.masnoticias.mx/feed/", "https://www.nmas.com.mx/rss/", "https://palabrasclaras.mx/feed/",
+    "https://sociedadtrespuntocero.com/feed/", "https://xeu.mx/feed/", "https://billieparkernoticias.com/feed/",
+    "https://imagendelgolfo.mx/feed/", "https://noreste.net/feed/", "https://ventanaver.mx/feed/",
+    "https://municipiosur.com/feed/", "https://www.elchiltepin.com/feed/", "https://veracruz.quadratin.com.mx/feed/",
+    "https://vanguardiaveracruz.com/feed/", "https://www.alcalorpolitico.com/rss/"
+]
+
+MUNICIPIOS = [
     "Acajete", "Acatlán", "Acayucan", "Actopan", "Acula", "Acultzingo", "Agua Dulce", 
     "Álamo Temapache", "Alpatláhuac", "Alto Lucero", "Altotonga", "Alvarado", "Amatitlán", 
     "Amatlán de los Reyes", "Ángel R. Cabada", "Apazapan", "Aquila", "Astacinga", 
@@ -222,426 +131,302 @@ PARAMETROS = [
     "Zacualpan", "Zaragoza", "Zentla", "Zongolica", "Zontecomatlán", "Zozocolco"
 ]
 
-ARCHIVO_HISTORIAL = "historial_noticias.json"
-ARCHIVO_MANUALES = "noticias_manuales.json"
+DEPENDENCIAS = [
+    "SEGOB", "SSP", "SEV", "SS", "SEFIPLAN", "SEDECOP", "SEDESOL", "SIOP", 
+    "STPSP", "SECTUR", "SECVER", "SEDEMA", "SEDARPA", "SPC", "Protección Civil",
+    "DIF Estatal", "CGCS", "CGEC", "Contraloría General", "Fiscalía General", "FGE"
+]
+
+ACTORES_MAP = {
+    "miguel angel yunes": "Opositor", "pepe yunes": "Opositor", "hector yunes": "Opositor",
+    "julen rementeria": "Opositor", "indira rosales": "Opositor", "patricia lobeira": "Alcalde / Opositor",
+    "fernando yunes": "Opositor", "sergio cadena": "Opositor", "manuel huerta": "Senador / Morena",
+    "billie parker": "Periodista", "mussio cardenas": "Columnista", "luis velazquez": "Columnista",
+    "raymundo jimenez": "Columnista", "claudia guerrero": "Periodista"
+}
+
+KEYWORDS_CRISIS_NAHLE = [
+    "corrupcion", "desvio", "denuncia", "escandalo", "crimen", "inseguridad",
+    "protesta", "manifestacion", "auditoria", "desabasto", "violencia", "bloqueo"
+]
+
+KEYWORDS_LLUVIAS = [
+    "inundacion", "inundaciones", "desbordamiento", "deslave", "deslaves",
+    "derrumbe", "derrumbes", "evacuacion", "refugio temporal", "rio desbordado"
+]
 
 # ==============================================================================
-# 4. FUNCIONES LÓGICAS Y CONEXIÓN CON IA
+# 4. FUNCIONES DE PROCESAMIENTO Y ANÁLISIS
 # ==============================================================================
-def normalizar_texto(texto):
+def normalizar(texto: str) -> str:
     if not texto: return ""
     return "".join(c for c in unicodedata.normalize('NFD', texto.lower()) if unicodedata.category(c) != 'Mn')
 
-def acortar_url(url_larga):
-    return url_larga
+def evaluar_reglas(titulo: str, contenido: str):
+    texto_norm = normalizar(f"{titulo} {contenido}")
+    
+    es_nahle = "nahle" in texto_norm or "rocio nahle" in texto_norm
+    tiene_crisis_nahle = any(kw in texto_norm for kw in KEYWORDS_CRISIS_NAHLE)
+    es_alerta_nahle = es_nahle and tiene_crisis_nahle
+    
+    es_lluvias = any(kw in texto_norm for kw in KEYWORDS_LLUVIAS)
+    es_crisis = tiene_crisis_nahle or es_lluvias or any(w in texto_norm for w in ["homicidio", "secuestro", "bloqueo vial", "fosa"])
+    
+    muni = "Estatal"
+    for m in MUNICIPIOS:
+        if normalizar(m) in texto_norm:
+            muni = m
+            break
+            
+    dep = "Gobierno del Estado"
+    for d in DEPENDENCIAS:
+        if normalizar(d) in texto_norm:
+            dep = d
+            break
 
-def obtener_feed_rss(url_rss):
-    try:
-        resp = requests.get(url_rss, headers=HEADERS_HTTP, timeout=12)
-        if resp.status_code == 200:
-            return feedparser.parse(resp.content)
-    except:
-        pass
-    try:
-        return feedparser.parse(url_rss)
-    except:
-        return None
+    return {
+        "es_alerta_nahle": es_alerta_nahle,
+        "es_lluvias": es_lluvias,
+        "es_crisis": es_crisis,
+        "municipio": muni,
+        "dependencia": dep
+    }
 
-def determinar_lista_medios():
-    if MODO_LISTA == "LISTA_1": return LISTA_1, "Lista 1 (Manual)"
-    if MODO_LISTA == "LISTA_2": return LISTA_2, "Lista 2 (Manual)"
-    if MODO_LISTA == "LISTA_3": return LISTA_3, "Lista 3 (Manual)"
-    if MODO_LISTA == "LISTA_IVAN": return LISTA_IVAN, "Lista Iván (Manual)"
-    if MODO_LISTA == "LISTA_5": return LISTA_5, "Lista 5 (Manual)"
-    return (LISTA_2, "Lista 2 (Fin de Semana)") if datetime.today().weekday() >= 5 else (LISTA_1, "Lista 1 (Entre Semana)")
-
-def cargar_historial():
-    if os.path.exists(ARCHIVO_HISTORIAL):
-        try:
-            with open(ARCHIVO_HISTORIAL, "r", encoding="utf-8") as f: return json.load(f)
-        except: return []
-    return []
-
-def guardar_historial(historial):
-    if len(historial) > 1500: historial = historial[-1500:]
-    try:
-        with open(ARCHIVO_HISTORIAL, "w", encoding="utf-8") as f: json.dump(historial, f, ensure_ascii=False, indent=4)
-    except: pass
-
-def cargar_noticias_manuales():
-    if os.path.exists(ARCHIVO_MANUALES):
-        try:
-            with open(ARCHIVO_MANUALES, "r", encoding="utf-8") as f: return json.load(f)
-        except: return []
-    return []
-
-def guardar_noticias_manuales(lista):
-    try:
-        with open(ARCHIVO_MANUALES, "w", encoding="utf-8") as f: json.dump(lista, f, ensure_ascii=False, indent=4)
-    except: pass
-
-def evaluar_texto(texto, palabras_clave):
-    texto_norm = normalizar_texto(texto)
-    for kw in palabras_clave:
-        kw_norm = normalizar_texto(kw)
-        if " " in kw_norm:
-            if kw_norm in texto_norm: return True, kw
-        else:
-            if re.search(rf"\b{re.escape(kw_norm)}\b", texto_norm): return True, kw
-    return False, None
-
-def analizar_nota_con_ia(titulo, resumen):
-    if not GEMINI_API_KEY: return "⚠️ Error: GEMINI_API_KEY no configurada en Render."
+def analizar_con_gemini(titulo: str, contenido: str, fuente: str):
+    if not GEMINI_API_KEY: return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    prompt = (
-        f"Eres un analista de comunicación política experto en el estado de Veracruz. "
-        f"Analiza la siguiente nota informativa (Título y/o Resumen) y genera estrictamente lo siguiente:\n"
-        f"1) Un resumen ejecutivo muy conciso en exactamente 3 viñetas cortas.\n"
-        f"2) Sentimiento de la nota hacia la administración pública (Positivo, Neutral o Negativo).\n"
-        f"3) Nivel de Riesgo Político o Potencial Crisis para el Gobierno del Estado (Bajo, Medio o Alto) con una breve línea del porqué.\n\n"
-        f"Título: {titulo}\n"
-        f"Contexto: {resumen}\n\n"
-        f"Responde usando formato Markdown limpio. Sé directo, institucional y preciso."
-    )
-    
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    prompt = f"""
+    Actúa como Analista Senior de Inteligencia Política y Manejo de Crisis del Gobierno de Veracruz.
+    Analiza esta nota y devuelve EXCLUSIVAMENTE un JSON con:
+    {{
+      "tipo_actor": "Medio | Periodista | Columnista | Opositor | Funcionario | Alcalde | Ciudadano",
+      "sentimiento": "Positivo | Neutral | Negativo | Muy negativo",
+      "riesgo_politico": "Bajo | Medio | Alto | Crítico",
+      "riesgo_mediatico": "Bajo | Medio | Alto | Crítico",
+      "tema_principal": "Tema en 6 palabras",
+      "municipio": "Municipio involucrado o 'Estatal'",
+      "dependencia": "Dependencia involucrada o 'Ninguna'",
+      "resumen_ejecutivo": ["Viñeta 1 corta", "Viñeta 2 corta", "Viñeta 3 corta"],
+      "impacto_potencial": "Riesgo en una frase",
+      "recomendacion_estrategica": "Acción recomendada"
+    }}
+    Nota: {fuente} - {titulo}. {contenido}
+    """
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
+    }
     try:
-        response = requests.post(url, json=payload, timeout=15)
-        if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
-        return f"⚠️ Error {response.status_code} de Google Gemini."
-    except:
-        return f"⚠️ Error de conexión con la IA."
+        resp = requests.post(url, json=payload, timeout=12)
+        if resp.status_code == 200:
+            return json.loads(resp.json()['candidates'][0]['content']['parts'][0]['text'])
+    except Exception:
+        pass
+    return None
 
-def enviar_mensaje_telegram(texto):
+# ==============================================================================
+# 5. MENSAJERÍA TELEGRAM
+# ==============================================================================
+def enviar_alerta_telegram(item: dict, ia: dict = None):
     if not TELEGRAM_TOKEN: return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "Markdown", "disable_web_page_preview": True}
+
+    if item.get("es_alerta_nahle"):
+        header = "🔥 *ALERTA CRÍTICA: GOBERNADORA ROCÍO NAHLE*"
+    elif item.get("tipo_fuente") == "CAPUFE":
+        header = "🛣️ *ALERTA VIAL CAPUFE: VERACRUZ*"
+    elif item.get("es_lluvias"):
+        header = "🌧️ *ALERTA PROTECCIÓN CIVIL / LLUVIAS*"
+    else:
+        header = "🚨 *ALERTA ESTRATÉGICA*"
+
+    fuente = item.get("fuente_nombre", "Medio")
+    autor = item.get("autor", "Redacción")
+    url = item.get("url", "#")
+
+    if ia:
+        actor = ia.get("tipo_actor", "Medio")
+        tema = ia.get("tema_principal", item.get("titulo", "Novedad"))
+        muni = ia.get("municipio", item.get("municipio", "Estatal"))
+        dep = ia.get("dependencia", item.get("dependencia", "Gobierno"))
+        sent = ia.get("sentimiento", "Neutral")
+        r_pol = ia.get("riesgo_politico", "Medio")
+        r_med = ia.get("riesgo_mediatico", "Medio")
+        vines = ia.get("resumen_ejecutivo", [])
+        resumen_txt = "\n".join([f"• {v}" for v in vines]) if isinstance(vines, list) else f"• {vines}"
+        impacto = ia.get("impacto_potencial", "Seguimiento preventivo")
+        rec = ia.get("recomendacion_estrategica", "Mantener monitoreo")
+    else:
+        actor = "Medio"
+        tema = item.get("titulo", "Novedad informativa")
+        muni = item.get("municipio", "Estatal")
+        dep = item.get("dependencia", "Gobierno")
+        sent = "Neutral"
+        r_pol = "Medio"
+        r_med = "Medio"
+        resumen_txt = f"• {item.get('contenido', '')[:200]}..."
+        impacto = "En análisis"
+        rec = "Revisar publicación"
+
+    msg = (
+        f"{header}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🏛️ *Fuente:* {fuente}\n"
+        f"✍️ *Autor:* {autor}\n"
+        f"👤 *Tipo de actor:* `{actor}`\n"
+        f"📌 *Tema:* {tema}\n"
+        f"📍 *Municipio:* {muni}\n"
+        f"🏢 *Dependencia:* {dep}\n"
+        f"📊 *Postura:* {sent}\n"
+        f"⚠️ *Riesgo Político:* `{r_pol}`\n"
+        f"📢 *Riesgo Mediático:* `{r_med}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📝 *Resumen Ejecutivo:*\n{resumen_txt}\n\n"
+        f"💥 *Impacto Potencial:*\n{impacto}\n\n"
+        f"🎯 *Recomendación Estratégica:*\n{rec}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 *Enlace:* {url}"
+    )
+
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 400:
+        r = requests.post(api_url, json=payload, timeout=10)
+        if r.status_code == 400:
             payload["parse_mode"] = ""
-            response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
-    except: return False
-
-def ejecutar_busqueda_prioritaria(tema_objetivo):
-    medios_activos, _ = determinar_lista_medios()
-    palabras_clave = [normalizar_texto(w) for w in tema_objetivo.split() if len(w) >= 3]
-    if not palabras_clave: return 0
-    coincidencias = 0
-    
-    for url_rss in medios_activos:
-        feed = obtener_feed_rss(url_rss)
-        if not feed or not hasattr(feed, 'entries'): continue
-        
-        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
-        for entrada in feed.entries:
-            titulo = entrada.get("title", "")
-            resumen = entrada.get("summary", "")
-            texto_analisis_norm = normalizar_texto(titulo + " " + resumen)
-            
-            if all(palabra in texto_analisis_norm for palabra in palabras_clave):
-                link = entrada.get("link", "#")
-                link_corto = acortar_url(link)
-                analisis_ia = analizar_nota_con_ia(titulo, resumen)
-                
-                fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
-                if fecha_parsed:
-                    dt_utc = datetime(*fecha_parsed[:6])
-                    dt_veracruz = dt_utc - timedelta(hours=6)
-                    timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
-                else:
-                    timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
-                
-                mensaje = (
-                    f"🔥 *HALLAZGO PRIORITARIO / COMUNICADO*\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"📌 *Medio:* {nombre_medio}\n"
-                    f"🎯 *Idea Central Investigada:* `{tema_objetivo}`\n"
-                    f"📝 *Título:* {titulo}\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
-                    f"{analisis_ia}\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                    f"🔗 *Enlace:* {link_corto}"
-                )
-                enviar_mensaje_telegram(mensaje)
-                coincidencias += 1
-                time.sleep(0.5)
-    return coincidencias
-
-def ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=None, lista_forzada=None):
-    if lista_forzada:
-        medios_activos = lista_forzada
-        nombre_lista = "Lista Asignada"
-    else:
-        medios_activos, nombre_lista = determinar_lista_medios()
-        
-    historial = cargar_historial()
-    noticias_manuales = cargar_noticias_manuales()
-    alertas_enviadas = 0
-    
-    if horas_atras:
-        epoch_threshold = calendar.timegm(time.gmtime()) - (horas_atras * 3600)
-    else:
-        ahora_utc = datetime.utcnow()
-        ahora_veracruz = ahora_utc - timedelta(hours=6)
-        if ahora_veracruz.hour >= 22:
-            fecha_10pm_veracruz = ahora_veracruz.replace(hour=22, minute=0, second=0, microsecond=0)
-        else:
-            fecha_10pm_veracruz = (ahora_veracruz - timedelta(days=1)).replace(hour=22, minute=0, second=0, microsecond=0)
-        epoch_threshold = calendar.timegm((fecha_10pm_veracruz + timedelta(hours=6)).utctimetuple())
-
-    for url_rss in medios_activos:
-        feed = obtener_feed_rss(url_rss)
-        if not feed or not hasattr(feed, 'entries'): continue
-        
-        nombre_medio = feed.feed.get("title", url_rss.split("//")[-1].split("/")[0])
-        for entrada in feed.entries:
-            link = entrada.get("link")
-            if not link or link in historial: continue
-            
-            titulo = entrada.get("title", "")
-            resumen = entrada.get("summary", "")
-            titulo_norm = normalizar_texto(titulo)
-            
-            if any(linea_manual in titulo_norm for linea_manual in noticias_manuales if len(linea_manual) > 8):
-                continue
-            
-            fecha_parsed = entrada.get("published_parsed") or entrada.get("updated_parsed")
-            timestamp_noticia = None
-            
-            if fecha_parsed:
-                try:
-                    nota_epoch = calendar.timegm(fecha_parsed)
-                    if nota_epoch < epoch_threshold: continue 
-                    dt_utc = datetime(*fecha_parsed[:6])
-                    dt_veracruz = dt_utc - timedelta(hours=6)
-                    timestamp_noticia = dt_veracruz.strftime("%H:%M del %d/%m/%Y")
-                except: pass
-            
-            if not timestamp_noticia:
-                timestamp_noticia = (datetime.utcnow() - timedelta(hours=6)).strftime("%H:%M del %d/%m/%Y")
-
-            hizo_match, kw_detectada = evaluar_texto(titulo, PARAMETROS)
-            if not hizo_match: hizo_match, kw_detectada = evaluar_texto(resumen, PARAMETROS)
-            
-            if hizo_match:
-                link_corto = acortar_url(link)
-                if usar_ia:
-                    analisis_ia = analizar_nota_con_ia(titulo, resumen)
-                    mensaje = (
-                        f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (CON IA)*\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 *Medio:* {nombre_medio}\n"
-                        f"🎯 *Match:* `{kw_detectada}`\n"
-                        f"📝 *Título:* {titulo}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🧠 *ANÁLISIS DE INTELIGENCIA (IA PRO):*\n"
-                        f"{analisis_ia}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                        f"🔗 *Enlace:* {link_corto}"
-                    )
-                else:
-                    mensaje = (
-                        f"🚨 *ALERTA CRÍTICA [{nombre_lista.upper()}] (ESTÁNDAR)*\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 *Medio:* {nombre_medio}\n"
-                        f"🎯 *Match:* `{kw_detectada}`\n"
-                        f"📝 *Título:* {titulo}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🕒 _Publicado a las {timestamp_noticia}_\n"
-                        f"🔗 *Enlace:* {link_corto}"
-                    )
-                enviar_mensaje_telegram(mensaje)
-                alertas_enviadas += 1
-                time.sleep(0.4)
-            historial.append(link)
-            
-    guardar_historial(historial)
-    return alertas_enviadas, nombre_lista
+            r = requests.post(api_url, json=payload, timeout=10)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 # ==============================================================================
-# 5. PROCESAMIENTO CENTRAL DE COMANDOS
+# 6. PIPELINE PRINCIPAL DE INGESTA
 # ==============================================================================
-def procesar_mensaje_telegram(mensaje):
-    global MODO_LISTA
-    usuario_id = mensaje.get("from", {}).get("id")
-    texto_comando = mensaje.get("text", "").strip()
+def ejecutar_ciclo():
+    db = SessionLocal()
+    items = []
     
-    if usuario_id != CHAT_ID: return
-    
-    if texto_comando == "/start" or texto_comando == "/ayuda":
-        menu = (
-            "📱 *Panel de Control RSS (WEBHOOK BLINDADO)*\n\n"
-            "📰 *MEDIOS WEB (RSS):*\n"
-            "👉 `/escanear` o `/escanear X` : Rastreo estándar Lista Regular.\n"
-            "👉 `/escanearIA` o `/escanearIA X` : Rastreo Lista Regular con IA Pro.\n"
-            "👉 `/escaneard` o `/escaneard X` : Rastreo estándar Lista Fin de Semana.\n"
-            "👉 `/escanearb` o `/escanearb X` : Rastreo estándar Lista 3.\n"
-            "👉 `/ivan` o `/ivan X` : Rastreo estándar Lista Iván.\n"
-            "👉 `/lista5` o `/lista5 X` : Rastreo estándar Lista 5 (Nueva).\n"
-            "👉 `/buscar IDEA` : Localizar comunicados urgentes.\n"
-            "👉 `/ayer BLOQUE` : Bloquear notas de hoy.\n\n"
-            "⚙️ *SISTEMA:*\n"
-            "👉 `/modo` : Ver o forzar listas.\n"
-            "👉 `/limpiar` : Vaciar historial de enlaces web."
-        )
-        enviar_mensaje_telegram(menu)
-        
-    elif texto_comando.startswith("/ayer"):
-        contenido = re.sub(r'^/ayer[\s\n]*', '', texto_comando).strip()
-        if contenido:
-            lineas = contenido.split("\n")
-            nuevas_notas = [normalizar_texto(l.strip()) for l in lineas if l.strip()]
-            existentes = cargar_noticias_manuales()
-            existentes.extend(nuevas_notas)
-            existentes = list(set(existentes))
-            guardar_noticias_manuales(existentes)
-            enviar_mensaje_telegram(f"✅ Registradas `{len(nuevas_notas)}` notas en el filtro.")
-        else:
-            guardar_noticias_manuales([])
-            enviar_mensaje_telegram("🗑️ Filtro de notas manuales vaciado.")
-            
-    elif texto_comando.startswith("/buscar "):
-        partes = texto_comando.split(" ", 1)
-        if len(partes) > 1:
-            tema_a_rastrear = partes[1].strip()
-            enviar_mensaje_telegram(f"🔍 _Buscando coincidencias para:_ `{tema_a_rastrear}`...")
-            encontrados = ejecutar_busqueda_prioritaria(tema_a_rastrear)
-            enviar_mensaje_telegram(f"✅ *Búsqueda terminada. Hallados:* `{encontrados}`")
-
-    elif texto_comando.startswith("/lista5"):
-        arg = texto_comando.replace("/lista5", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 5 (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_5)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista 5 (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_5)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista 5 Terminado.*\n✨ Alertas enviadas: `{total}`")
-
-    elif texto_comando.startswith("/ivan"):
-        arg = texto_comando.replace("/ivan", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Iván (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_IVAN)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista Iván (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_IVAN)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista Iván Terminado.*\n✨ Alertas enviadas: `{total}`")
-            
-    elif texto_comando.startswith("/escanearb"):
-        arg = texto_comando.replace("/escanearb", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista 3 (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_3)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista 3 (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_3)
-        enviar_mensaje_telegram(f"✅ *Escaneo Lista 3 Terminado.*\n✨ Alertas enviadas: `{total}`")
-            
-    elif texto_comando.startswith("/escaneard"):
-        arg = texto_comando.replace("/escaneard", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando Lista Fin de Semana (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas, lista_forzada=LISTA_FIN_DE_SEMANA)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando Lista Fin de Semana (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, lista_forzada=LISTA_FIN_DE_SEMANA)
-        enviar_mensaje_telegram(f"✅ *Escaneo Fin de Semana Terminado.*\n✨ Alertas enviadas: `{total}`")
-        
-    elif texto_comando.startswith("/escanearIA"):
-        arg = texto_comando.replace("/escanearIA", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas con IA)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True, horas_atras=horas)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM con IA)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=True)
-        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas procesadas por IA Pro: `{total}`")
-        
-    elif texto_comando.startswith("/escanear"):
-        arg = texto_comando.replace("/escanear", "").strip()
-        num = re.findall(r'\d+', arg)
-        horas = int(num[0]) if num else None
-        if horas:
-            enviar_mensaje_telegram(f"🔍 _Rastreando portales regulares (Últimas {horas} horas)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False, horas_atras=horas)
-        else:
-            enviar_mensaje_telegram("🔍 _Rastreando portales regulares (Corte desde 10:00 PM)..._")
-            total, _ = ejecutar_monitoreo_silencioso(usar_ia=False)
-        enviar_mensaje_telegram(f"✅ *Escaneo Terminado.*\n✨ Alertas enviadas: `{total}`")
-        
-    elif texto_comando == "/modo":
-        msg_modo = f"⚙️ Modo actual: `{MODO_LISTA}`\n\n👉 `/set_auto` | `/set_lista1` | `/set_lista2` | `/set_lista3` | `/set_ivan` | `/set_lista5`"
-        enviar_mensaje_telegram(msg_modo)
-    elif texto_comando == "/set_auto":
-        MODO_LISTA = "AUTO"
-        enviar_mensaje_telegram("🔄 Modo: `AUTOMÁTICO`")
-    elif texto_comando == "/set_lista1":
-        MODO_LISTA = "LISTA_1"
-        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 1`")
-    elif texto_comando == "/set_lista2":
-        MODO_LISTA = "LISTA_2"
-        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 2`")
-    elif texto_comando == "/set_lista3":
-        MODO_LISTA = "LISTA_3"
-        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 3`")
-    elif texto_comando == "/set_ivan":
-        MODO_LISTA = "LISTA_IVAN"
-        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA IVÁN`")
-    elif texto_comando == "/set_lista5":
-        MODO_LISTA = "LISTA_5"
-        enviar_mensaje_telegram("📌 Modo: `FORZAR LISTA 5`")
-    elif texto_comando == "/limpiar":
-        if os.path.exists(ARCHIVO_HISTORIAL): os.remove(ARCHIVO_HISTORIAL)
-        enviar_mensaje_telegram("🗑 *Historial de enlaces limpio.*")
-
-# ==============================================================================
-# 6. ENRUTADOR WEB FLASK CON ACCESO AL WEBHOOK DE TELEGRAM
-# ==============================================================================
-web_app = Flask('')
-
-@web_app.route('/')
-def home(): 
-    return "Servicio RSS Operando bajo Webhook Inmortal en Render"
-
-@web_app.route('/webhook', methods=['POST'])
-def recibe_webhook_telegram():
+    # 1. Scraping CAPUFE
     try:
-        datos_json = request.get_json()
-        if datos_json and "message" in datos_json:
-            threading.Thread(target=procesar_mensaje_telegram, args=(datos_json["message"],), daemon=True).start()
-    except Exception as e:
-        print(f"⚠️ Error procesando JSON entrante: {e}")
+        capufe_feed = feedparser.parse("https://nitter.privacydev.net/CAPUFE/rss")
+        for e in capufe_feed.entries[:10]:
+            sum_txt = e.get("summary", "")
+            if any(t in sum_txt.lower() for t in ["veracruz", "cordoba", "orizaba", "maltrata", "coatzacoalcos", "isla", "tinaja"]):
+                items.append({
+                    "hash_id": generar_hash(f"CAPUFE_{e.get('link')}"),
+                    "tipo_fuente": "CAPUFE",
+                    "fuente_nombre": "CAPUFE Oficial",
+                    "autor": "@CAPUFE",
+                    "titulo": "Aviso Carretero CAPUFE",
+                    "contenido": sum_txt,
+                    "url": e.get("link", "#").replace("nitter.privacydev.net", "x.com"),
+                    "fecha_publicacion": datetime.utcnow()
+                })
+    except Exception:
+        pass
+
+    # 2. Ingesta RSS
+    limite = datetime.utcnow() - timedelta(hours=3)
+    for url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            nombre_medio = feed.feed.get("title", url.split("//")[-1].split("/")[0])
+            for e in feed.entries[:8]:
+                link = e.get("link", "")
+                if not link: continue
+                
+                titulo = e.get("title", "").strip()
+                resumen = e.get("summary", "").strip()
+                h_id = generar_hash(f"{link}_{titulo}")
+                
+                items.append({
+                    "hash_id": h_id,
+                    "tipo_fuente": "RSS",
+                    "fuente_nombre": nombre_medio,
+                    "autor": e.get("author", nombre_medio),
+                    "titulo": titulo,
+                    "contenido": f"{titulo}. {resumen}",
+                    "url": link,
+                    "fecha_publicacion": datetime.utcnow()
+                })
+        except Exception:
+            continue
+
+    # 3. Procesamiento y Deduplicación en Base de Datos
+    for data in items:
+        if db.query(ItemMonitoreo).filter_by(hash_id=data["hash_id"]).first():
+            continue
+
+        reglas = evaluar_reglas(data.get("titulo", ""), data.get("contenido", ""))
+        debe_ia = reglas["es_alerta_nahle"] or reglas["es_crisis"] or reglas["es_lluvias"] or data["tipo_fuente"] == "CAPUFE"
+        
+        ia = None
+        if debe_ia:
+            ia = analizar_con_gemini(data.get("titulo", ""), data.get("contenido", ""), data["fuente_nombre"])
+            enviar_alerta_telegram(data | reglas, ia)
+            time.sleep(0.5)
+
+        nuevo = ItemMonitoreo(
+            hash_id=data["hash_id"],
+            tipo_fuente=data["tipo_fuente"],
+            fuente_nombre=data["fuente_nombre"],
+            autor=data.get("autor"),
+            titulo=data.get("titulo"),
+            contenido=data.get("contenido"),
+            url=data["url"],
+            fecha_publicacion=data.get("fecha_publicacion"),
+            es_alerta_gobernadora=reglas["es_alerta_nahle"],
+            es_crisis=reglas["es_crisis"],
+            es_lluvias_pc=reglas["es_lluvias"],
+            municipio_detectado=ia.get("municipio") if ia else reglas["municipio"],
+            dependencia_detectada=ia.get("dependencia") if ia else reglas["dependencia"],
+            sentimiento=ia.get("sentimiento") if ia else None,
+            riesgo_politico=ia.get("riesgo_politico") if ia else None,
+            riesgo_mediatico=ia.get("riesgo_mediatico") if ia else None,
+            alerta_enviada=debe_ia
+        )
+        db.add(nuevo)
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+# ==============================================================================
+# 7. SERVIDOR FLASK, SCHEDULER Y WEBHOOK
+# ==============================================================================
+app = Flask(__name__)
+scheduler = BackgroundScheduler(daemon=True)
+
+@app.route('/')
+def home():
+    return "Sistema de Inteligencia de Veracruz v2.0 - Activo"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    datos = request.get_json()
+    if datos and "message" in datos:
+        msg = datos["message"]
+        if msg.get("from", {}).get("id") == CHAT_ID:
+            txt = msg.get("text", "").strip()
+            if txt == "/escanear":
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
+                              json={"chat_id": CHAT_ID, "text": "🚀 _Iniciando rastreo integral..._", "parse_mode": "Markdown"})
+                threading.Thread(target=ejecutar_ciclo, daemon=True).start()
     return "OK", 200
 
-def registrar_webhook_en_telegram():
+def registrar_webhook():
     time.sleep(3)
-    url_webhook_propia = "https://monitor-rss-service.onrender.com/webhook"
-    url_api_telegram = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={url_webhook_propia}"
+    endpoint = f"{WEBHOOK_URL.rstrip('/')}/webhook"
     try:
-        requests.get(url_api_telegram, timeout=10)
-        print("🚀 [SISTEMA] Enlace de Webhook registrado correctamente en los servidores de Telegram.")
-    except:
-        print("⚠️ [SISTEMA] Intento fallido de enlazar el Webhook.")
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={endpoint}", timeout=8)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
-    threading.Thread(target=registrar_webhook_en_telegram, daemon=True).start()
-    puerto = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=puerto)
+    scheduler.add_job(ejecutar_ciclo, 'interval', minutes=5, id='monitor_veracruz', replace_existing=True)
+    scheduler.start()
+    threading.Thread(target=registrar_webhook, daemon=True).start()
+    app.run(host="0.0.0.0", port=PORT)
