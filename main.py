@@ -16,7 +16,8 @@ from flask import Flask, request
 # 1. CONFIGURACIÓN E IDENTIFICACIÓN
 # ==============================================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = int(os.environ.get("CHAT_ID", "1468116225"))
+# ID del grupo configurado (-5252825542)
+CHAT_ID = int(os.environ.get("CHAT_ID", "-5252825542"))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 PORT = int(os.environ.get("PORT", 8080))
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://monitor-rss-service.onrender.com")
@@ -141,8 +142,8 @@ PARAMETROS = [
     "Tlaltetela", "Tlapacoyan", "Tlaquilpa", "Tlilapan", "Tomatlán", "Tonayán", 
     "Totutla", "Tres Valles", "Tuxpan", "Tuxtilla", "Úrsulo Galván", "Vega de Alatorre", 
     "Veracruz", "Villa Aldama", "Xalapa", "Xico", "Xoxocotla", "Yanga", "Yecuatla", 
-    "Zacualpan", "Zaragoza", "Zentla", "Zongolica", "Zontecomatlán", "Zozocolco",
-    "Yunes", "Manuel Huerta", "Julen Rementería", "Patricia Lobeira", "Claudia Guerrero",
+    "Zacualpan", "Zaragoza", "Zentla", "Zongolica", "Zontecomatlán", "Zozocolco", 
+    "Yunes", "Manuel Huerta", "Julen Rementería", "Patricia Lobeira", "Claudia Guerrero", 
     "Mussio Cárdenas", "inundación", "deslave", "derrumbe", "bloqueo", "homicidio"
 ]
 
@@ -384,8 +385,13 @@ def webhook():
     datos = request.get_json()
     if datos and "message" in datos:
         msg = datos["message"]
-        if msg.get("from", {}).get("id") == CHAT_ID:
-            txt = msg.get("text", "").strip()
+        chat_id_recibido = msg.get("chat", {}).get("id")
+
+        # Verifica que el mensaje provenga del grupo configurado
+        if chat_id_recibido == CHAT_ID:
+            raw_text = msg.get("text", "").strip()
+            # Limpia comandos con sufijo de bot en grupos (ej. "/escanear@tu_bot" -> "/escanear")
+            txt = re.sub(r"(@\w+)", "", raw_text).strip()
 
             if txt == "/start" or txt == "/ayuda":
                 menu = (
